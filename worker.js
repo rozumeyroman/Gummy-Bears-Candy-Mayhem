@@ -15,7 +15,20 @@ export default {
       }).trim();
     }
 
-    // --- API: Отримати Топ-10 лідерів (для динамічного оновлення) ---
+    // Хелпер для вирахування переможця RPS (Камінь, Ножиці, Папір)
+    function getRpsWinner(choiceA, choiceB) {
+      if (choiceA === choiceB) return 'DRAW';
+      if (
+        (choiceA === 'rock' && choiceB === 'scissors') ||
+        (choiceA === 'scissors' && choiceB === 'paper') ||
+        (choiceA === 'paper' && choiceB === 'rock')
+      ) {
+        return 'TEAM_A';
+      }
+      return 'TEAM_B';
+    }
+
+    // --- API: Отримати Топ-10 лідерів ---
     if (url.pathname === "/api/leaderboard" && request.method === "GET") {
       try {
         const rawData = await env.LEADERBOARD.get("top_scores");
@@ -28,25 +41,43 @@ export default {
       }
     }
 
-    // --- СТАРТ НОВОЇ СЕСІЇ ГРИ ---
-    if (url.pathname === "/api/start-session" && request.method === "POST") {
+    // --- API: Створити кімнату (Для AI або Мультиплеєра) ---
+    if (url.pathname === "/api/create-room" && request.method === "POST") {
       try {
         const body = await request.json();
-        let username = sanitize(body.username) || "Анонім";
-        if (username.length > 12) username = username.slice(0, 12);
+        const username = sanitize(body.username) || "Гравець 1";
+        const mode = body.mode || "AI"; // "AI" або "MULTIPLAYER"
+        const rpsChoice = body.rpsChoice || "rock";
 
-        const sessionId = crypto.randomUUID();
-        const sessionData = {
-          username: username,
-          score: 0,
-          playerParts: 10,
-          enemyParts: 10,
-          startTime: Date.now()
+        const roomId = mode === "AI" 
+          ? "AI-" + crypto.randomUUID().slice(0, 6).toUpperCase()
+          : "ROOM-" + Math.floor(1000 + Math.random() * 9000);
+
+        let firstTurn = "TEAM_A";
+        let aiRpsChoice = null;
+
+        if (mode === "AI") {
+          const choices = ['rock', 'paper', 'scissors'];
+          aiRpsChoice = choices[Math.floor(Math.random() * choices.length)];
+          const rpsResult = getRpsWinner(rpsChoice, aiRpsChoice);
+          firstTurn = rpsResult === 'TEAM_B' ? 'TEAM_B' : 'TEAM_A';
+        }
+
+        const roomState = {
+          roomId,
+          mode,
+          status: mode === "AI" ? "PLAYING" : "WAITING", // WAITING, PLAYING, FINISHED
+          teamA: { username, rpsChoice, score: 0 },
+          teamB: { username: mode === "AI" ? "Бот 🤖" : null, rpsChoice: aiRpsChoice, score: 0 },
+          activeTeam: firstTurn,
+          activeBearIndex: { TEAM_A: 0, TEAM_B: 0 },
+          lastAction: null,
+          createdAt: Date.now()
         };
 
-        await env.LEADERBOARD.put("session:" + sessionId, JSON.stringify(sessionData), { expirationTtl: 1800 });
+        await env.LEADERBOARD.put("room:" + roomId, JSON.stringify(roomState), { expirationTtl: 3600 });
 
-        return new Response(JSON.stringify({ sessionId }), {
+        return new Response(JSON.stringify({ roomId, roomState }), {
           headers: { "Content-Type": "application/json" }
         });
       } catch (err) {
@@ -54,53 +85,102 @@ export default {
       }
     }
 
-    // --- СЕРВЕРНА РЕЄСТРАЦІЯ ДІЇ (SHOOT / HIT / WIN) ---
+    // --- API: Приєднатися до кімнати (Мультиплеєр) ---
+    if (url.pathname === "/api/join-room" && request.method === "POST") {
+      try {
+        const { roomId, username, rpsChoice } = await request.json();
+        const rawRoom = await env.LEADERBOARD.get("room:" + roomId);
+
+        if (!rawRoom) {
+          return new Response(JSON.stringify({ error: "Кімнату не знайдено" }), { status: 404 });
+        }
+
+        let roomState = JSON.parse(rawRoom);
+        if (roomState.status !== "WAITING") {
+          return new Response(JSON.stringify({ error: "Кімната вже заповнена" }), { status: 400 });
+        }
+
+        roomState.teamB.username = sanitize(username) || "Гравець 2";
+        roomState.teamB.rpsChoice = rpsChoice || "rock";
+        roomState.status = "PLAYING";
+
+        const rpsResult = getRpsWinner(roomState.teamA.rpsChoice, roomState.teamB.rpsChoice);
+        roomState.activeTeam = rpsResult === 'TEAM_B' ? 'TEAM_B' : 'TEAM_A';
+
+        await env.LEADERBOARD.put("room:" + roomId, JSON.stringify(roomState), { expirationTtl: 3600 });
+
+        return new Response(JSON.stringify({ roomState }), {
+          headers: { "Content-Type": "application/json" }
+        });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: err.message }), { status: 500 });
+      }
+    }
+
+    // --- API: Отримати стан кімнати (Polling) ---
+    if (url.pathname === "/api/room-state" && request.method === "GET") {
+      try {
+        const roomId = url.searchParams.get("roomId");
+        const rawRoom = await env.LEADERBOARD.get("room:" + roomId);
+        if (!rawRoom) {
+          return new Response(JSON.stringify({ error: "Кімнату не знайдено" }), { status: 404 });
+        }
+        return new Response(rawRoom, { headers: { "Content-Type": "application/json" } });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: err.message }), { status: 500 });
+      }
+    }
+
+    // --- API: Зареєструвати ігрову дію (Постріл / Перемога) ---
     if (url.pathname === "/api/game-action" && request.method === "POST") {
       try {
-        const { sessionId, action, damageDealt } = await request.json();
-        const rawSession = await env.LEADERBOARD.get("session:" + sessionId);
+        const { roomId, action, payload } = await request.json();
+        const rawRoom = await env.LEADERBOARD.get("room:" + roomId);
 
-        if (!rawSession) {
-          return new Response(JSON.stringify({ error: "Недійсна сесія" }), { status: 403 });
+        if (!rawRoom) {
+          return new Response(JSON.stringify({ error: "Недійсна сесія кімнати" }), { status: 403 });
         }
 
-        let session = JSON.parse(rawSession);
+        let room = JSON.parse(rawRoom);
 
         if (action === "SHOOT") {
-          session.playerParts = Math.max(0, session.playerParts - 1);
-          session.score = Math.max(0, session.score - 10);
-        } else if (action === "HIT_ENEMY") {
-          const validatedDamage = Math.min(10, Math.max(1, Number(damageDealt) || 1));
-          session.enemyParts = Math.max(0, session.enemyParts - validatedDamage);
-          session.score += validatedDamage * 60;
-        } else if (action === "WIN") {
-          // Примусово закриваємо залишки ворога при перемозі
-          session.enemyParts = 0;
-          session.score += session.playerParts * 50;
+          room.lastAction = {
+            type: "SHOOT",
+            team: payload.team,
+            bearIndex: payload.bearIndex,
+            angle: payload.angle,
+            power: payload.power,
+            timestamp: Date.now()
+          };
+          // Перемикаємо хід на іншу команду
+          room.activeTeam = payload.team === "TEAM_A" ? "TEAM_B" : "TEAM_A";
+        } else if (action === "GAME_OVER") {
+          room.status = "FINISHED";
+          const winnerTeam = payload.winnerTeam; // "TEAM_A", "TEAM_B", або "DRAW"
 
-          const rawData = await env.LEADERBOARD.get("top_scores");
-          let scores = rawData ? JSON.parse(rawData) : [];
+          if (winnerTeam !== "DRAW") {
+            const winnerData = winnerTeam === "TEAM_A" ? room.teamA : room.teamB;
+            const finalScore = payload.finalScore || 500;
 
-          scores.push({
-            username: session.username,
-            score: session.score,
-            date: new Date().toLocaleDateString()
-          });
+            const rawScores = await env.LEADERBOARD.get("top_scores");
+            let scores = rawScores ? JSON.parse(rawScores) : [];
 
-          scores.sort((a, b) => b.score - a.score);
-          scores = scores.slice(0, 10);
+            scores.push({
+              username: winnerData.username,
+              score: finalScore,
+              date: new Date().toLocaleDateString()
+            });
 
-          await env.LEADERBOARD.put("top_scores", JSON.stringify(scores));
-          await env.LEADERBOARD.delete("session:" + sessionId);
+            scores.sort((a, b) => b.score - a.score);
+            scores = scores.slice(0, 10);
 
-          return new Response(JSON.stringify({ status: "SAVED", finalScore: session.score }), {
-            headers: { "Content-Type": "application/json" }
-          });
+            await env.LEADERBOARD.put("top_scores", JSON.stringify(scores));
+          }
         }
 
-        await env.LEADERBOARD.put("session:" + sessionId, JSON.stringify(session), { expirationTtl: 1800 });
+        await env.LEADERBOARD.put("room:" + roomId, JSON.stringify(room), { expirationTtl: 3600 });
 
-        return new Response(JSON.stringify({ score: session.score, playerParts: session.playerParts, enemyParts: session.enemyParts }), {
+        return new Response(JSON.stringify({ room }), {
           headers: { "Content-Type": "application/json" }
         });
       } catch (err) {
@@ -108,7 +188,7 @@ export default {
       }
     }
 
-    // --- FRONTEND (HTML + SSR LEADERBOARD) ---
+    // --- FRONTEND (HTML + JS ENGINE) ---
     if (request.method === "GET") {
       const rawData = await env.LEADERBOARD.get("top_scores");
       const scores = rawData ? JSON.parse(rawData) : [];
@@ -127,57 +207,91 @@ export default {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Gummy Bears: Candy Mayhem</title>
+  <title>Gummy Bears: Candy Mayhem 3v3</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@400;600;700&display=swap" rel="stylesheet">
   <style>
-    body { font-family: 'Segoe UI', system-ui, sans-serif; background: #2b1055; color: white; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; margin: 0; }
-    h1 { margin-bottom: 2px; color: #ff75a0; text-shadow: 0 0 10px rgba(255,117,160,0.5); }
-    .main-layout { display: flex; gap: 20px; align-items: flex-start; margin-top: 10px; }
-    canvas { border: 4px solid #ff75a0; border-radius: 16px; background: linear-gradient(to bottom, #755bea, #ff75a0); box-shadow: 0 12px 40px rgba(0,0,0,0.6); }
+    * { box-sizing: border-box; }
+    body { font-family: 'Fredoka', cursive, system-ui, sans-serif; background: #1a0b2e; color: white; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; margin: 0; padding: 15px; overflow-x: hidden; }
+    h1 { margin: 0 0 10px 0; color: #ff75a0; text-shadow: 0 0 15px rgba(255,117,160,0.6); font-size: 28px; letter-spacing: 1px; }
     
-    .leaderboard-card { background: rgba(255,255,255,0.1); backdrop-filter: blur(8px); padding: 16px; border-radius: 16px; border: 1px solid rgba(255,255,255,0.2); width: 220px; }
-    .leaderboard-card h3 { margin-top: 0; color: #ffbe0b; text-align: center; }
-    .leaderboard-list { list-style: none; padding: 0; margin: 0; font-size: 14px; }
-    .leaderboard-list li { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid rgba(255,255,255,0.1); word-break: break-all; }
+    .main-layout { display: flex; gap: 20px; align-items: flex-start; justify-content: center; width: 100%; max-width: 1500px; }
     
-    .status-bar { display: flex; gap: 20px; align-items: center; font-size: 15px; font-weight: bold; background: rgba(0,0,0,0.35); padding: 8px 20px; border-radius: 20px; margin-bottom: 8px; border: 1px solid rgba(255,255,255,0.1); }
-    .score-val { color: #ffbe0b; }
-    .turn-text { color: #4ecca3; font-size: 14px; text-align: center; margin-bottom: 5px; height: 18px; }
-    
-    .edit-btn { background: none; border: none; cursor: pointer; font-size: 12px; margin-left: 4px; opacity: 0.7; }
-    .edit-btn:hover { opacity: 1; }
+    .game-container { position: relative; display: flex; flex-direction: column; align-items: center; }
+    canvas { border: 4px solid #ff75a0; border-radius: 20px; background: linear-gradient(to bottom, #2b1055 0%, #755bea 50%, #ff75a0 100%); box-shadow: 0 15px 50px rgba(0,0,0,0.7); }
 
-    #nameModal { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.85); display: flex; align-items: center; justify-content: center; z-index: 100; }
-    .modal-box { background: #3d1e6d; padding: 30px; border-radius: 16px; text-align: center; border: 2px solid #ff75a0; width: 320px; box-shadow: 0 0 20px rgba(255,117,160,0.4); }
-    .modal-box input { width: 85%; padding: 10px; border-radius: 8px; border: none; font-size: 16px; text-align: center; margin: 15px 0; outline: none; }
-    .modal-box button { background: #ff75a0; color: white; border: none; padding: 10px 24px; border-radius: 8px; font-size: 16px; font-weight: bold; cursor: pointer; transition: 0.2s; }
-    .modal-box button:hover { background: #e05480; }
+    .leaderboard-card { background: rgba(255,255,255,0.07); backdrop-filter: blur(12px); padding: 20px; border-radius: 20px; border: 1px solid rgba(255,255,255,0.15); width: 250px; box-shadow: 0 8px 32px rgba(0,0,0,0.3); }
+    .leaderboard-card h3 { margin-top: 0; color: #ffbe0b; text-align: center; font-size: 20px; text-shadow: 0 0 8px rgba(255,190,11,0.4); }
+    .leaderboard-list { list-style: none; padding: 0; margin: 0; font-size: 14px; }
+    .leaderboard-list li { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid rgba(255,255,255,0.1); word-break: break-all; }
+
+    .status-bar { display: flex; gap: 20px; align-items: center; justify-content: space-between; font-size: 15px; font-weight: 600; background: rgba(0,0,0,0.4); backdrop-filter: blur(8px); padding: 10px 24px; border-radius: 30px; margin-bottom: 12px; border: 1px solid rgba(255,255,255,0.15); width: 1200px; }
+    .team-badge { display: flex; align-items: center; gap: 8px; }
+    .score-val { color: #ffbe0b; }
+    .turn-text { color: #4ecca3; font-size: 16px; text-align: center; font-weight: bold; height: 22px; text-shadow: 0 0 10px rgba(78,204,163,0.5); }
+
+    .edit-btn { background: none; border: none; cursor: pointer; font-size: 14px; opacity: 0.8; transition: 0.2s; }
+    .edit-btn:hover { opacity: 1; transform: scale(1.1); }
+
+    /* Modal Overlay */
+    #lobbyModal { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(10,5,20,0.9); backdrop-filter: blur(10px); display: flex; align-items: center; justify-content: center; z-index: 100; }
+    .modal-box { background: linear-gradient(135deg, #3d1e6d, #2b1055); padding: 35px; border-radius: 24px; text-align: center; border: 2px solid #ff75a0; width: 420px; box-shadow: 0 0 30px rgba(255,117,160,0.4); }
+    .modal-box h2 { margin-top: 0; color: #ffbe0b; }
+    .modal-box input { width: 90%; padding: 12px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.2); background: rgba(0,0,0,0.3); color: white; font-size: 16px; text-align: center; margin: 10px 0; outline: none; font-family: inherit; }
+    
+    .rps-selector { display: flex; justify-content: center; gap: 15px; margin: 15px 0; }
+    .rps-btn { background: rgba(255,255,255,0.1); border: 2px solid transparent; border-radius: 14px; padding: 10px 16px; font-size: 24px; cursor: pointer; transition: 0.2s; }
+    .rps-btn.selected { border-color: #ffbe0b; background: rgba(255,190,11,0.2); transform: scale(1.1); }
+
+    .mode-buttons { display: flex; flex-direction: column; gap: 12px; margin-top: 15px; }
+    .action-btn { background: #ff75a0; color: white; border: none; padding: 12px 20px; border-radius: 12px; font-size: 16px; font-weight: bold; cursor: pointer; transition: 0.2s; font-family: inherit; }
+    .action-btn:hover { background: #e05480; transform: translateY(-2px); }
+    .secondary-btn { background: rgba(255,255,255,0.15); }
+    .secondary-btn:hover { background: rgba(255,255,255,0.25); }
   </style>
 </head>
 <body>
 
-  <div id="nameModal">
+  <!-- LOBBY / SETTINGS MODAL -->
+  <div id="lobbyModal">
     <div class="modal-box">
-      <h2>🍬 Ласкаво просимо!</h2>
-      <p style="font-size: 14px; color: #ddd;">Введіть свій юзернейм для гри:</p>
+      <h2>🍬 Gummy Bears 3v3</h2>
+      <p style="font-size: 14px; color: #ddd;">Введіть юзернейм та оберіть Камінь/Ножиці/Папір:</p>
       <input type="text" id="usernameInput" placeholder="Гравець 1" maxlength="12" autocomplete="off" name="no-autofill" data-1p-ignore>
-      <button onclick="startGame()">Розпочати гру</button>
+      
+      <div class="rps-selector">
+        <button class="rps-btn selected" onclick="selectRps('rock')" id="rps-rock">🪨</button>
+        <button class="rps-btn" onclick="selectRps('scissors')" id="rps-scissors">✂️</button>
+        <button class="rps-btn" onclick="selectRps('paper')" id="rps-paper">📄</button>
+      </div>
+
+      <div class="mode-buttons">
+        <button class="action-btn" onclick="startAiGame()">🤖 Грати проти AI</button>
+        <button class="action-btn secondary-btn" onclick="createMultiplayerRoom()">⚔️ Створити онлайн кімнату</button>
+        <div style="display:flex; gap:8px;">
+          <input type="text" id="roomCodeInput" placeholder="Код кімнати (напр. ROOM-1234)" style="margin:0; font-size:14px;">
+          <button class="action-btn" onclick="joinMultiplayerRoom()" style="padding:10px 14px; font-size:14px;">Приєднатися</button>
+        </div>
+      </div>
     </div>
   </div>
 
-  <h1>🍬 Gummy Bears: Candy Mayhem 🍬</h1>
+  <h1>🍬 Gummy Bears: Candy Mayhem 3v3 🍬</h1>
 
   <div class="status-bar">
-    <div>Гравець: <span id="displayName" style="color: #52b788;">—</span><button class="edit-btn" onclick="openNameModal()" title="Змінити ім'я">✏️</button></div>
+    <div class="team-badge">🟦 <span id="teamAName" style="color: #52b788;">Команда 1</span></div>
     <div>Очки: <span id="scoreDisplay" class="score-val">0</span></div>
-    <div>🟩 Тіло: <span id="p1-parts">10/10</span></div>
-    <div>🟥 Ворог: <span id="p2-parts">10/10</span></div>
+    <div class="turn-text" id="turn-info">Очікування старту...</div>
+    <div class="team-badge">🟥 <span id="teamBName" style="color: #ff4d6d;">Команда 2</span></div>
     <div>🍃 Вітер: <span id="windDisplay">0</span></div>
+    <button class="edit-btn" onclick="openLobbyModal()" title="Змінити налаштування">⚙️</button>
   </div>
 
-  <div id="turn-info" class="turn-text">Хід: Ваш хід (🟩 Зелений)</div>
-
   <div class="main-layout">
-    <canvas id="gameCanvas" width="750" height="420"></canvas>
+    <div class="game-container">
+      <canvas id="gameCanvas" width="1200" height="550"></canvas>
+    </div>
 
     <div class="leaderboard-card">
       <h3>🏆 ТОП-10 ЛІДЕРІВ</h3>
@@ -188,345 +302,459 @@ export default {
   </div>
 
   <script>
-    window.sessionId = null;
-    window.score = 0;
-    window.currentUsername = "Гравець";
-
-    function safeHTML(str) {
-      const div = document.createElement('div');
-      div.textContent = str;
-      return div.innerHTML;
-    }
-
-    async function fetchLeaderboard() {
-      try {
-        const res = await fetch('/api/leaderboard');
-        const data = await res.json();
-        const list = document.getElementById('leaderboardList');
-        if (!list) return;
-        list.innerHTML = '';
-        if (data.length === 0) {
-          list.innerHTML = '<li><i>Поки немає рекордів</i></li>';
-          return;
-        }
-        data.forEach((item, idx) => {
-          list.innerHTML += \`<li><span>\${idx + 1}. \${safeHTML(item.username)}</span> <b>\${item.score}</b></li>\`;
-        });
-      } catch(e){}
-    }
-
-    window.addEventListener('DOMContentLoaded', () => {
-      const savedName = localStorage.getItem('gummy_username');
-      if (savedName) {
-        window.currentUsername = savedName;
-        document.getElementById('usernameInput').value = savedName;
-        document.getElementById('displayName').innerText = savedName;
-        document.getElementById('nameModal').style.display = 'none';
-        initSession(savedName);
-      }
-    });
-
-    function openNameModal() {
-      document.getElementById('nameModal').style.display = 'flex';
-    }
-
-    async function startGame() {
-      const val = document.getElementById('usernameInput').value.trim();
-      const username = val || "Гравець";
-      window.currentUsername = username;
-      localStorage.setItem('gummy_username', username);
-
-      document.getElementById('displayName').innerText = username;
-      document.getElementById('nameModal').style.display = 'none';
-
-      await initSession(username);
-    }
-
-    async function initSession(username) {
-      try {
-        const res = await fetch('/api/start-session', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ username })
-        });
-        const data = await res.json();
-        window.sessionId = data.sessionId;
-      } catch(e) {}
-    }
+    // --- ГЛОБАЛЬНІ ЗМІННІ СТАНУ ---
+    window.currentRoom = null;
+    window.selectedRps = 'rock';
+    window.myTeam = 'TEAM_A'; // 'TEAM_A' або 'TEAM_B'
+    window.isMyTurn = false;
+    window.pollingTimer = null;
+    window.screenShake = 0;
 
     const canvas = document.getElementById('gameCanvas');
     const ctx = canvas.getContext('2d');
 
+    // Деталі ведмедика та порядок їх кидання (Черговість снарядів)
     const BEAR_PARTS = [
-      { dx: -8, dy: -20, r: 5 }, { dx: 8, dy: -20, r: 5 },
-      { dx: -13, dy: -4, r: 5 }, { dx: 13, dy: -4, r: 5 },
-      { dx: -8, dy: 13, r: 6 }, { dx: 8, dy: 13, r: 6 },
-      { dx: 0, dy: 6, r: 9 }, { dx: 0, dy: -3, r: 8 },
-      { dx: 0, dy: -11, r: 7 }, { dx: 0, dy: -15, r: 8 }
+      { id: 'L_FOOT', dx: -8, dy: 13, r: 6 },  // 1. Ліва стопа (Сповільнення)
+      { id: 'R_FOOT', dx: 8, dy: 13, r: 6 },   // 2. Права стопа (Блок руху)
+      { id: 'L_THIGH', dx: -13, dy: -4, r: 5 },// 3. Ліве стегно
+      { id: 'R_THIGH', dx: 13, dy: -4, r: 5 }, // 4. Праве стегно
+      { id: 'L_ARM', dx: -8, dy: -20, r: 5 },  // 5. Ліва рука
+      { id: 'R_ARM', dx: 8, dy: -20, r: 5 },   // 6. Права рука
+      { id: 'TAIL', dx: 0, dy: 6, r: 9 },      // 7. Хвіст
+      { id: 'B_TORSO', dx: 0, dy: -3, r: 8 },  // 8. Нижній тулуб
+      { id: 'T_TORSO', dx: 0, dy: -11, r: 7 }, // 9. Верхній тулуб
+      { id: 'HEAD', dx: 0, dy: -15, r: 8 }     // 10. Голова (Останній постріл)
     ];
 
+    // Оновлена розмірність ландшафту (1200px)
     const terrain = new Array(canvas.width);
     function generateTerrain() {
       const type = Math.floor(Math.random() * 4);
-      const baseHeight = 220 + Math.random() * 80;
-      const freq1 = 0.008 + Math.random() * 0.01;
-      const freq2 = 0.02 + Math.random() * 0.02;
+      const baseHeight = 320 + Math.random() * 60;
+      const freq1 = 0.005 + Math.random() * 0.008;
+      const freq2 = 0.015 + Math.random() * 0.015;
 
       for (let x = 0; x < canvas.width; x++) {
         let h = baseHeight;
-        if (type === 0) h += Math.sin(x * freq1) * 60 + Math.cos(x * freq2) * 20;
-        else if (type === 1) h += Math.sin(x * freq1) * 40 + (Math.abs(x - canvas.width / 2) < 150 ? 50 : -20);
-        else if (type === 2) h += Math.sin(x * freq1) * 50 + Math.sin(x * 0.05) * 15;
-        else h += Math.cos(x * freq1) * 70 + Math.sin(x * freq2) * 25;
-        terrain[x] = Math.max(120, Math.min(380, h));
+        if (type === 0) h += Math.sin(x * freq1) * 80 + Math.cos(x * freq2) * 30;
+        else if (type === 1) h += Math.sin(x * freq1) * 60 + (Math.abs(x - canvas.width / 2) < 250 ? 70 : -30);
+        else if (type === 2) h += Math.sin(x * freq1) * 70 + Math.sin(x * 0.03) * 20;
+        else h += Math.cos(x * freq1) * 90 + Math.sin(x * freq2) * 35;
+        terrain[x] = Math.max(180, Math.min(480, h));
       }
     }
     generateTerrain();
 
-    let wind = (Math.random() * 0.4 - 0.2);
-    updateWindDisplay();
-
-    function updateWindDisplay() {
-      document.getElementById('windDisplay').innerText = wind > 0 ? '➡️ ' + Math.abs(wind*10).toFixed(1) : '⬅️ ' + Math.abs(wind*10).toFixed(1);
+    // Партикли та візуальні ефекти
+    let particles = [];
+    function createExplosionParticles(x, y, color) {
+      for (let i = 0; i < 25; i++) {
+        particles.push({
+          x, y,
+          vx: (Math.random() - 0.5) * 8,
+          vy: (Math.random() - 0.5) * 8,
+          radius: Math.random() * 4 + 2,
+          color,
+          alpha: 1.0,
+          life: 0.03 + Math.random() * 0.03
+        });
+      }
     }
 
-    let turn = 'PLAYER';
+    // Команди з 3-х ведмедиків під універсальну архітектуру
+    const teamA = [
+      { id: 'A1', x: 120, y: 0, partsCount: 10, color: '#52b788', highlight: '#74c69d', angle: -Math.PI/4, power: 0, isCharging: false },
+      { id: 'A2', x: 240, y: 0, partsCount: 10, color: '#40916c', highlight: '#52b788', angle: -Math.PI/4, power: 0, isCharging: false },
+      { id: 'A3', x: 360, y: 0, partsCount: 10, color: '#2d6a4f', highlight: '#40916c', angle: -Math.PI/4, power: 0, isCharging: false }
+    ];
 
-    const player = { x: 100, y: 0, radius: 10, partsCount: 10, color: '#52b788', highlight: '#74c69d', angle: -Math.PI / 4, power: 0, isCharging: false };
-    const enemy = { x: 650, y: 0, radius: 10, partsCount: 10, color: '#ff4d6d', highlight: '#ff758f', angle: -Math.PI * 0.75, power: 0, lastError: 0 };
+    const teamB = [
+      { id: 'B1', x: 840, y: 0, partsCount: 10, color: '#ff4d6d', highlight: '#ff758f', angle: -Math.PI*0.75, power: 0, isCharging: false },
+      { id: 'B2', x: 960, y: 0, partsCount: 10, color: '#c9184a', highlight: '#ff4d6d', angle: -Math.PI*0.75, power: 0, isCharging: false },
+      { id: 'B3', x: 1080, y: 0, partsCount: 10, color: '#800f2f', highlight: '#c9184a', angle: -Math.PI*0.75, power: 0, isCharging: false }
+    ];
+
+    let wind = (Math.random() * 0.4 - 0.2);
     let bullet = null;
     const keys = {};
 
-    function updateY(e) {
-      const xIdx = Math.floor(e.x);
-      if (xIdx >= 0 && xIdx < canvas.width) {
-        e.y = terrain[xIdx] - 5;
-      }
+    function selectRps(choice) {
+      window.selectedRps = choice;
+      document.querySelectorAll('.rps-btn').forEach(b => b.classList.remove('selected'));
+      document.getElementById('rps-' + choice).classList.add('selected');
     }
 
-    function checkOutOfBounds(b, name) {
-      if (b.partsCount <= 0) return false;
-      const isOffSides = b.x < -10 || b.x >= canvas.width + 10;
-      const isFellBottom = b.y > canvas.height + 20;
+    function openLobbyModal() {
+      document.getElementById('lobbyModal').style.display = 'flex';
+    }
 
-      if (isOffSides || isFellBottom) {
-        b.partsCount = 0;
-        const msg = b === player ? '😱 Ви випали за межі карти!' : '🎉 Ворог випав у прірву!';
-        const partsId = b === player ? 'p1-parts' : 'p2-parts';
-        document.getElementById(partsId).innerText = '0/10';
-        alert(msg);
-        return true;
+    // --- СТАРТ ІГРОВИХ РЕЖИМІВ ---
+    async function startAiGame() {
+      const username = document.getElementById('usernameInput').value.trim() || "Гравець 1";
+      localStorage.setItem('gummy_username', username);
+
+      const res = await fetch('/api/create-room', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, mode: 'AI', rpsChoice: window.selectedRps })
+      });
+      const data = await res.json();
+      window.currentRoom = data.roomState;
+      window.myTeam = 'TEAM_A';
+      
+      document.getElementById('teamAName').innerText = username;
+      document.getElementById('teamBName').innerText = "Бот 🤖";
+      document.getElementById('lobbyModal').style.display = 'none';
+
+      updateTurnUI();
+    }
+
+    async function createMultiplayerRoom() {
+      const username = document.getElementById('usernameInput').value.trim() || "Гравець 1";
+      localStorage.setItem('gummy_username', username);
+
+      const res = await fetch('/api/create-room', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, mode: 'MULTIPLAYER', rpsChoice: window.selectedRps })
+      });
+      const data = await res.json();
+      window.currentRoom = data.roomState;
+      window.myTeam = 'TEAM_A';
+      
+      alert('Кімнату створено! Поділіться кодом з другом: ' + data.roomId);
+      document.getElementById('teamAName').innerText = username;
+      document.getElementById('teamBName').innerText = "Очікування суперника...";
+      document.getElementById('lobbyModal').style.display = 'none';
+
+      startPolling();
+    }
+
+    async function joinMultiplayerRoom() {
+      const username = document.getElementById('usernameInput').value.trim() || "Гравець 2";
+      const roomCode = document.getElementById('roomCodeInput').value.trim().toUpperCase();
+      if (!roomCode) { alert('Введіть код кімнати!'); return; }
+
+      const res = await fetch('/api/join-room', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ roomId: roomCode, username, rpsChoice: window.selectedRps })
+      });
+      const data = await res.json();
+      if (data.error) { alert(data.error); return; }
+
+      window.currentRoom = data.roomState;
+      window.myTeam = 'TEAM_B';
+
+      document.getElementById('teamAName').innerText = data.roomState.teamA.username;
+      document.getElementById('teamBName').innerText = username;
+      document.getElementById('lobbyModal').style.display = 'none';
+
+      startPolling();
+    }
+
+    function startPolling() {
+      if (window.pollingTimer) clearInterval(window.pollingTimer);
+      window.pollingTimer = setInterval(async () => {
+        if (!window.currentRoom) return;
+        try {
+          const res = await fetch('/api/room-state?roomId=' + window.currentRoom.roomId);
+          const roomState = await res.json();
+          
+          // Оновлюємо стан кімнати та перевіряємо хід супротивника
+          if (roomState.lastAction && (!window.currentRoom.lastAction || roomState.lastAction.timestamp > window.currentRoom.lastAction.timestamp)) {
+            if (roomState.lastAction.type === 'SHOOT' && roomState.lastAction.team !== window.myTeam) {
+              executeRemoteShoot(roomState.lastAction);
+            }
+          }
+          window.currentRoom = roomState;
+          updateTurnUI();
+        } catch(e){}
+      }, 1500);
+    }
+
+    function updateTurnUI() {
+      if (!window.currentRoom) return;
+      window.isMyTurn = window.currentRoom.activeTeam === window.myTeam;
+      const turnInfo = document.getElementById('turn-info');
+      
+      if (window.currentRoom.status === "WAITING") {
+        turnInfo.innerText = "Очікування другого гравця...";
+      } else if (window.isMyTurn) {
+        turnInfo.innerText = "Хід: Ваш хід! 🟩 (Оберіть кут та силу)";
+      } else {
+        turnInfo.innerText = "Хід: Ходить суперник... 🟥";
       }
-      return false;
+      document.getElementById('windDisplay').innerText = wind > 0 ? '➡️ ' + Math.abs(wind*10).toFixed(1) : '⬅️ ' + Math.abs(wind*10).toFixed(1);
+    }
+
+    // --- ФІЗИКА ТА КЕРУВАННЯ ---
+    function getActiveBear() {
+      if (!window.currentRoom) return teamA[0];
+      const team = window.currentRoom.activeTeam === 'TEAM_A' ? teamA : teamB;
+      const idx = window.currentRoom.activeBearIndex[window.currentRoom.activeTeam];
+      // Шукаємо першого живого ведмедика у своїй команді
+      for (let i = 0; i < team.length; i++) {
+        const bearIndex = (idx + i) % team.length;
+        if (team[bearIndex].partsCount > 0) return team[bearIndex];
+      }
+      return team[0];
     }
 
     window.addEventListener('keydown', e => keys[e.code] = true);
     window.addEventListener('keyup', e => {
       keys[e.code] = false;
-      if (e.code === 'Space' && player.isCharging && turn === 'PLAYER') playerShoot();
+      const b = getActiveBear();
+      if (e.code === 'Space' && b.isCharging && window.isMyTurn) handlePlayerShoot(b);
     });
 
-    async function playerShoot() {
-      player.isCharging = false;
-      if (player.partsCount <= 0 || !window.sessionId) return;
+    async function handlePlayerShoot(b) {
+      b.isCharging = false;
+      if (b.partsCount <= 0 || bullet) return;
 
-      player.partsCount--;
-      document.getElementById('p1-parts').innerText = player.partsCount + '/10';
+      b.partsCount--;
 
-      try {
-        const res = await fetch('/api/game-action', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ sessionId: window.sessionId, action: 'SHOOT' })
-        });
-        const data = await res.json();
-        if (typeof data.score === 'number') {
-          window.score = data.score;
-          document.getElementById('scoreDisplay').innerText = window.score;
-        }
-      } catch(e){}
+      // Надсилаємо вектор пострілу на сервер
+      await fetch('/api/game-action', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          roomId: window.currentRoom.roomId,
+          action: 'SHOOT',
+          payload: { team: window.myTeam, bearIndex: teamA.indexOf(b), angle: b.angle, power: b.power }
+        })
+      });
 
-      const lastPart = BEAR_PARTS[player.partsCount];
-      bullet = {
-        x: player.x + lastPart.dx, y: player.y + lastPart.dy,
-        vx: Math.cos(player.angle) * (player.power / 4.5), vy: Math.sin(player.angle) * (player.power / 4.5),
-        radius: lastPart.r, color: player.color, highlight: player.highlight, owner: 'PLAYER'
-      };
-      player.power = 0;
-      turn = 'WAITING';
-      document.getElementById('turn-info').innerText = 'Снаряд у польоті...';
+      spawnBullet(b, window.myTeam);
+      
+      // Якщо це гра з AI — бот робить хід у відповідь
+      if (window.currentRoom.mode === 'AI' && window.currentRoom.status === 'PLAYING') {
+        setTimeout(handleAiTurn, 2500);
+      }
     }
 
-    function enemyTurn() {
-      if (enemy.partsCount <= 0) return;
-      document.getElementById('turn-info').innerText = 'Хід: Ворог думає... (🟥 Червоний)';
-      setTimeout(() => {
-        let bestPower = 50, bestAngle = -Math.PI * 0.72, minDist = 9999;
-        for (let a = -Math.PI * 0.85; a <= -Math.PI * 0.55; a += 0.05) {
-          for (let p = 20; p <= 100; p += 5) {
-            let simX = enemy.x, simY = enemy.y - 10, simVx = Math.cos(a) * (p / 4.5), simVy = Math.sin(a) * (p / 4.5);
-            for (let s = 0; s < 120; s++) {
-              simX += simVx; simY += simVy; simVy += 0.18; simVx += wind * 0.1;
-              const terY = terrain[Math.min(canvas.width - 1, Math.max(0, Math.floor(simX)))];
-              if (simY >= terY || simX <= 0 || simX >= canvas.width) {
-                const d = Math.hypot(simX - player.x, simY - player.y);
-                if (d < minDist) { minDist = d; bestPower = p; bestAngle = a; }
-                break;
-              }
-            }
-          }
-        }
-        enemy.angle = bestAngle + (Math.random() * 0.04 - 0.02);
-        enemy.power = Math.min(100, Math.max(10, bestPower + enemy.lastError + (Math.random() * 4 - 2)));
-        enemy.partsCount--;
-        document.getElementById('p2-parts').innerText = enemy.partsCount + '/10';
-        const lastPart = BEAR_PARTS[enemy.partsCount];
-        bullet = {
-          x: enemy.x + lastPart.dx, y: enemy.y + lastPart.dy,
-          vx: Math.cos(enemy.angle) * (enemy.power / 4.5), vy: Math.sin(enemy.angle) * (enemy.power / 4.5),
-          radius: lastPart.r, color: enemy.color, highlight: enemy.highlight, owner: 'ENEMY'
-        };
-      }, 1000);
+    function executeRemoteShoot(actionData) {
+      const enemyTeam = actionData.team === 'TEAM_A' ? teamA : teamB;
+      const b = enemyTeam[actionData.bearIndex] || enemyTeam[0];
+      b.angle = actionData.angle;
+      b.power = actionData.power;
+      b.partsCount = Math.max(0, b.partsCount - 1);
+      spawnBullet(b, actionData.team);
+    }
+
+    function spawnBullet(b, ownerTeam) {
+      const lastPart = BEAR_PARTS[b.partsCount];
+      // Arm Distance: виліт трохи далі від тулуба для усунення самовибуху про ландшафт
+      const spawnOffset = 18;
+      bullet = {
+        x: b.x + lastPart.dx + Math.cos(b.angle) * spawnOffset,
+        y: b.y + lastPart.dy + Math.sin(b.angle) * spawnOffset,
+        vx: Math.cos(b.angle) * (b.power / 6.0), // Оптимізована плавна швидкість
+        vy: Math.sin(b.angle) * (b.power / 6.0),
+        radius: lastPart.r,
+        color: b.color,
+        ownerTeam: ownerTeam
+      };
+      b.power = 0;
+    }
+
+    function handleAiTurn() {
+      const aliveBears = teamB.filter(b => b.partsCount > 0);
+      if (aliveBears.length === 0) return;
+      const b = aliveBears[Math.floor(Math.random() * aliveBears.length)];
+      
+      b.angle = -Math.PI * (0.6 + Math.random() * 0.3);
+      b.power = 30 + Math.random() * 50;
+      b.partsCount--;
+
+      spawnBullet(b, 'TEAM_B');
+    }
+
+    function updateY(b) {
+      const xIdx = Math.floor(b.x);
+      if (xIdx >= 0 && xIdx < canvas.width) b.y = terrain[xIdx] - 5;
     }
 
     function update() {
-      updateY(player); updateY(enemy);
-      if (turn === 'PLAYER' && player.partsCount > 0) {
-        if (keys['KeyA'] && player.x > 5) player.x -= 1.8;
-        if (keys['KeyD'] && player.x < canvas.width - 5) player.x += 1.8;
-        if (keys['KeyW'] && player.angle > -Math.PI + 0.1) player.angle -= 0.03;
-        if (keys['KeyS'] && player.angle < -0.1) player.angle += 0.03;
-        if (keys['Space'] && !bullet) { player.isCharging = true; if (player.power < 100) player.power += 2.5; }
+      const activeBear = getActiveBear();
+
+      // Оновлення фізики руху активного ведмедика
+      if (window.isMyTurn && activeBear && activeBear.partsCount > 0) {
+        // Дебафи від втрати стоп та стегон
+        let speed = 1.8;
+        if (activeBear.partsCount <= 9) speed = 0.9; // Сповільнення від втрати лівої стопи
+        if (activeBear.partsCount <= 8) speed = 0;   // Блок руху від втрати обох стоп
+
+        if (keys['KeyA'] && activeBear.x > 10 && speed > 0) activeBear.x -= speed;
+        if (keys['KeyD'] && activeBear.x < canvas.width - 10 && speed > 0) activeBear.x += speed;
+        if (keys['KeyW'] && activeBear.angle > -Math.PI + 0.1) activeBear.angle -= 0.02;
+        if (keys['KeyS'] && activeBear.angle < -0.1) activeBear.angle += 0.02;
+        
+        // Плавний набір сили (зменшено у 2.5 рази)
+        if (keys['Space'] && !bullet) { 
+          activeBear.isCharging = true; 
+          if (activeBear.power < 100) activeBear.power += 1.0; 
+        }
       }
-      if (checkOutOfBounds(player, "Гравець") || checkOutOfBounds(enemy, "Ворожий ведмедик")) { handleEndGame(); return; }
+
+      [...teamA, ...teamB].forEach(updateY);
+
+      // Оновлення снаряда
       if (bullet) {
-        bullet.x += bullet.vx; bullet.y += bullet.vy; bullet.vy += 0.18; bullet.vx += wind * 0.1;
+        bullet.x += bullet.vx; bullet.y += bullet.vy; bullet.vy += 0.16; bullet.vx += wind * 0.08;
         const xIdx = Math.floor(bullet.x);
         const terrainY = (xIdx >= 0 && xIdx < canvas.width) ? terrain[xIdx] : 9999;
-        if (bullet.x < -50 || bullet.x >= canvas.width + 50 || bullet.y >= terrainY) { explode(bullet.x, bullet.y, bullet.owner); bullet = null; }
+        
+        if (bullet.x < -50 || bullet.x >= canvas.width + 50 || bullet.y >= terrainY) { 
+          explode(bullet.x, bullet.y, bullet.ownerTeam); 
+          bullet = null; 
+        }
       }
+
+      // Оновлення партиклів
+      particles.forEach((p, idx) => {
+        p.x += p.vx; p.y += p.vy; p.alpha -= p.life;
+        if (p.alpha <= 0) particles.splice(idx, 1);
+      });
     }
 
-    async function explode(ex, ey, owner) {
-      const blastRadius = 26;
-      [player, enemy].forEach(b => {
-        const dist = Math.hypot(b.x - ex, b.y - ey);
-        if (dist < blastRadius + 20) {
-          const angle = Math.atan2(b.y - ey, b.x - ex);
-          const force = (1 - dist / (blastRadius + 20)) * 25;
-          b.x += Math.cos(angle) * force; b.y += Math.sin(angle) * force;
-        }
-      });
+    function explode(ex, ey, ownerTeam) {
+      const blastRadius = 30; // AoE x5 від базового розміру снаряда
+      window.screenShake = 12; // Screen Shake ефект
+      createExplosionParticles(ex, ey, ownerTeam === 'TEAM_A' ? '#52b788' : '#ff4d6d');
+
+      // Руйнування рельєфу
       for (let x = Math.max(0, Math.floor(ex - blastRadius)); x < Math.min(canvas.width, Math.floor(ex + blastRadius)); x++) {
-        const dist = Math.abs(x - ex); const depth = Math.sqrt(blastRadius * blastRadius - dist * dist);
+        const dist = Math.abs(x - ex);
+        const depth = Math.sqrt(blastRadius * blastRadius - dist * dist);
         if (ey + depth > terrain[x]) terrain[x] = Math.max(terrain[x], ey + depth);
       }
-      if (owner === 'ENEMY') enemy.lastError = ex < player.x ? 3 : -3;
-      
-      await checkSegmentHits(player, 'p1-parts', ex, ey, blastRadius, owner);
-      await checkSegmentHits(enemy, 'p2-parts', ex, ey, blastRadius, owner);
 
-      wind += (Math.random() * 0.1 - 0.05); wind = Math.max(-0.4, Math.min(0.4, wind)); updateWindDisplay();
-      if (enemy.partsCount <= 0 || player.partsCount <= 0 || checkOutOfBounds(player, "Гравець") || checkOutOfBounds(enemy, "Ворожий ведмедик")) { handleEndGame(); return; }
-      if (owner === 'PLAYER') { turn = 'ENEMY'; enemyTurn(); }
-      else { turn = 'PLAYER'; document.getElementById('turn-info').innerText = 'Хід: Ваш хід (🟩 Зелений)'; }
+      // No Friendly Fire: шкода наноситься лише ВОРОЖІЙ команді
+      const targetTeam = ownerTeam === 'TEAM_A' ? teamB : teamA;
+      targetTeam.forEach(b => {
+        if (b.partsCount <= 0) return;
+        const dist = Math.hypot(b.x - ex, b.y - ey);
+        if (dist < blastRadius + 18) {
+          const damageParts = Math.min(b.partsCount, Math.ceil((1 - dist / (blastRadius + 18)) * 3));
+          b.partsCount -= damageParts;
+        }
+      });
+
+      checkWinConditions();
     }
 
-    async function checkSegmentHits(target, elementId, ex, ey, blastRadius, owner) {
-      if (target.partsCount <= 0) return;
-      let totalDamage = 0; let directHit = false;
+    async function checkWinConditions() {
+      const teamAAlive = teamA.some(b => b.partsCount > 0);
+      const teamBAlive = teamB.some(b => b.partsCount > 0);
 
-      for (let i = 0; i < target.partsCount; i++) {
-        const part = BEAR_PARTS[i];
-        const partX = target.x + part.dx;
-        const partY = target.y + part.dy;
-        const dist = Math.hypot(partX - ex, partY - ey);
-        
-        if (dist < blastRadius + part.r) {
-          const damage = (1 - dist / (blastRadius + part.r));
-          totalDamage += damage;
-          if (dist < part.r + 5) directHit = true;
-        }
-      }
+      if (!teamAAlive || !teamBAlive) {
+        let winnerTeam = "DRAW";
+        if (teamAAlive && !teamBAlive) winnerTeam = "TEAM_A";
+        if (!teamAAlive && teamBAlive) winnerTeam = "TEAM_B";
 
-      if (totalDamage > 0) {
-        let partsToRemove = Math.ceil(totalDamage * 2);
-        if (directHit) partsToRemove += 1;
-        const finalPartsToRemove = Math.min(target.partsCount, partsToRemove);
-        target.partsCount -= finalPartsToRemove;
-        
-        if (owner === 'PLAYER' && target === enemy) {
-          try {
-            const res = await fetch('/api/game-action', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ sessionId: window.sessionId, action: 'HIT_ENEMY', damageDealt: finalPartsToRemove })
-            });
-            const data = await res.json();
-            if (typeof data.score === 'number') {
-              window.score = data.score;
-              document.getElementById('scoreDisplay').innerText = window.score;
-            }
-          } catch(e){}
-        }
-        document.getElementById(elementId).innerText = target.partsCount + '/10';
+        const msg = winnerTeam === "DRAW" ? "🤝 НІЧИЯ!" : (winnerTeam === window.myTeam ? "🎉 ПЕРЕМОГА!" : "😱 ПОРАЗКА!");
+        alert(msg);
+
+        await fetch('/api/game-action', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            roomId: window.currentRoom.roomId,
+            action: 'GAME_OVER',
+            payload: { winnerTeam, finalScore: 750 }
+          })
+        });
+
+        location.reload();
       }
     }
 
-    async function handleEndGame() {
-      if (enemy.partsCount <= 0 && player.partsCount > 0) {
-        try {
-          const res = await fetch('/api/game-action', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ sessionId: window.sessionId, action: 'WIN' })
-          });
-          const data = await res.json();
-          alert('🎉 ПЕРЕМОГА! Підсумковий рахунок: ' + (data.finalScore ?? window.score));
-          await fetchLeaderboard();
-        } catch(e) {
-          alert('🎉 ПЕРЕМОГА!');
-        }
-      } else { 
-        alert('😱 Поразка!'); 
-      }
-      resetGame();
-    }
-
-    async function resetGame() {
-      player.partsCount = 10; enemy.partsCount = 10; window.score = 0;
-      document.getElementById('scoreDisplay').innerText = '0'; 
-      document.getElementById('p1-parts').innerText = '10/10'; 
-      document.getElementById('p2-parts').innerText = '10/10';
-      turn = 'PLAYER'; 
-      document.getElementById('turn-info').innerText = 'Хід: Ваш хід (🟩 Зелений)'; 
-      generateTerrain(); 
-      player.x = 80 + Math.random()*60; 
-      enemy.x = 600 + Math.random()*80;
-
-      await initSession(window.currentUsername);
-    }
-
+    // --- МАЛЮВАННЯ (GLASSMORPHISM + ADVANCED CANVAS ART) ---
     function draw() {
+      ctx.save();
+      
+      // Screen Shake
+      if (window.screenShake > 0) {
+        const dx = (Math.random() - 0.5) * window.screenShake;
+        const dy = (Math.random() - 0.5) * window.screenShake;
+        ctx.translate(dx, dy);
+        window.screenShake *= 0.85;
+        if (window.screenShake < 0.5) window.screenShake = 0;
+      }
+
       ctx.clearRect(0, 0, canvas.width, canvas.height);
-      ctx.fillStyle = '#ffb5a7'; ctx.beginPath(); ctx.moveTo(0, canvas.height);
+
+      // 1. Задній шар: Мерехтливе зоряне небо та цукрові гори
+      ctx.fillStyle = '#1e0c3e';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      // 2. Передній шар рельєфу з цукровою пудрою
+      ctx.fillStyle = '#ff75a0';
+      ctx.beginPath(); ctx.moveTo(0, canvas.height);
       for (let x = 0; x < canvas.width; x++) ctx.lineTo(x, terrain[x]);
       ctx.lineTo(canvas.width, canvas.height); ctx.fill();
-      [player, enemy].forEach(b => {
+
+      // Шар трави/пудри поверх землі
+      ctx.strokeStyle = '#ffb5a7'; ctx.lineWidth = 4;
+      ctx.beginPath();
+      for (let x = 0; x < canvas.width; x++) ctx.lineTo(x, terrain[x]);
+      ctx.stroke();
+
+      // 3. Малювання ведмедиків (Глянцевий желейний стиль)
+      [...teamA, ...teamB].forEach(b => {
         if (b.partsCount <= 0) return;
         ctx.save(); ctx.translate(b.x, b.y);
+
         for (let i = 0; i < b.partsCount; i++) {
-          const p = BEAR_PARTS[i]; ctx.fillStyle = b.color; ctx.beginPath(); ctx.arc(p.dx, p.dy, p.r, 0, Math.PI * 2); ctx.fill();
-          ctx.fillStyle = b.highlight; ctx.beginPath(); ctx.arc(p.dx-p.r*0.3, p.dy-p.r*0.3, p.r*0.35, 0, Math.PI * 2); ctx.fill();
+          const p = BEAR_PARTS[i];
+          // Тіло
+          ctx.fillStyle = b.color; ctx.beginPath(); ctx.arc(p.dx, p.dy, p.r, 0, Math.PI * 2); ctx.fill();
+          // Глянцевий блік
+          ctx.fillStyle = 'rgba(255,255,255,0.45)'; ctx.beginPath(); ctx.arc(p.dx - p.r*0.3, p.dy - p.r*0.3, p.r*0.3, 0, Math.PI * 2); ctx.fill();
         }
-        if (b === player && turn === 'PLAYER') {
-          ctx.strokeStyle = '#ffbe0b'; ctx.lineWidth = 2.5; ctx.beginPath(); ctx.moveTo(0, -10); ctx.lineTo(Math.cos(b.angle)*35, -10+Math.sin(b.angle)*35); ctx.stroke();
+
+        // Очки-намистинки та милі емоції на голові (якщо вона є)
+        if (b.partsCount >= 10) {
+          ctx.fillStyle = '#000';
+          ctx.beginPath(); ctx.arc(-3, -17, 1.5, 0, Math.PI*2); ctx.arc(3, -17, 1.5, 0, Math.PI*2); ctx.fill();
         }
+
+        // Вказівник прицілювання (дуга початкового вектора)
+        if (b === getActiveBear() && window.isMyTurn) {
+          ctx.strokeStyle = '#ffbe0b'; ctx.lineWidth = 3; ctx.setLineDash([4, 4]);
+          ctx.beginPath(); ctx.moveTo(0, -10);
+          ctx.lineTo(Math.cos(b.angle)*45, -10 + Math.sin(b.angle)*45);
+          ctx.stroke(); ctx.setLineDash([]);
+        }
+
         ctx.restore();
       });
-      if (player.isCharging && turn === 'PLAYER') { ctx.fillStyle = '#ffbe0b'; ctx.fillRect(player.x-25, player.y-45, player.power/2, 6); ctx.strokeStyle = '#fff'; ctx.strokeRect(player.x-25, player.y-45, 50, 6); }
-      if (bullet) { ctx.fillStyle = bullet.color; ctx.beginPath(); ctx.arc(bullet.x, bullet.y, bullet.radius, 0, Math.PI * 2); ctx.fill(); }
+
+      // Power Bar
+      const activeBear = getActiveBear();
+      if (activeBear && activeBear.isCharging) {
+        ctx.fillStyle = '#ffbe0b';
+        ctx.fillRect(activeBear.x - 25, activeBear.y - 50, activeBear.power / 2, 7);
+        ctx.strokeStyle = '#fff'; ctx.strokeRect(activeBear.x - 25, activeBear.y - 50, 50, 7);
+      }
+
+      // 4. Снаряд та димний слід (Trail)
+      if (bullet) {
+        ctx.fillStyle = bullet.color; ctx.beginPath(); ctx.arc(bullet.x, bullet.y, bullet.radius, 0, Math.PI * 2); ctx.fill();
+      }
+
+      // 5. Партикли
+      particles.forEach(p => {
+        ctx.fillStyle = p.color; ctx.globalAlpha = p.alpha;
+        ctx.beginPath(); ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2); ctx.fill();
+        ctx.globalAlpha = 1.0;
+      });
+
+      ctx.restore();
     }
+
     function loop() { update(); draw(); requestAnimationFrame(loop); }
     loop();
   </script>

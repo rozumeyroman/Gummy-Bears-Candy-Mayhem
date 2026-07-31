@@ -2,7 +2,6 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
 
-    // Допоміжна функція санітизації від XSS
     function sanitize(str) {
       if (typeof str !== 'string') return '';
       return str.replace(/[&<>"']/g, function(m) {
@@ -16,54 +15,26 @@ export default {
       }).trim();
     }
 
-    // --- API: Отримати Топ-10 лідерів ---
-    if (url.pathname === "/api/leaderboard" && request.method === "GET") {
-      try {
-        const rawData = await env.LEADERBOARD.get("top_scores");
-        const scores = rawData ? JSON.parse(rawData) : [];
-        return new Response(JSON.stringify(scores), {
-          headers: { "Content-Type": "application/json" }
-        });
-      } catch (err) {
-        return new Response(JSON.stringify([]), { headers: { "Content-Type": "application/json" } });
-      }
-    }
-
-    // --- API: Зберегти новий результат ---
-    if (url.pathname === "/api/leaderboard" && request.method === "POST") {
+    // --- СТАРТ НОВОЇ СЕСІЇ ГРИ (Генерація серверного токена) ---
+    if (url.pathname === "/api/start-session" && request.method === "POST") {
       try {
         const body = await request.json();
-        let { username, score, secretCheck } = body;
+        let username = sanitize(body.username) || "Анонім";
+        if (username.length > 12) username = username.slice(0, 12);
 
-        username = sanitize(username);
-        if (!username || username.length > 12) {
-          username = "Анонім";
-        }
+        const sessionId = crypto.randomUUID();
+        const sessionData = {
+          username: username,
+          score: 0,
+          playerParts: 10,
+          enemyParts: 10,
+          startTime: Date.now()
+        };
 
-        if (typeof score !== "number" || score < 0 || score > 10000) {
-          return new Response(JSON.stringify({ error: "Некоректний рахунок" }), { status: 400 });
-        }
+        // Зберігаємо сесію в KV з таймаутом 30 хвилин
+        await env.LEADERBOARD.put("session:" + sessionId, JSON.stringify(sessionData), { expirationTtl: 1800 });
 
-        const expectedSecret = btoa(username + score + "candy_secret_key").slice(0, 16);
-        if (secretCheck !== expectedSecret) {
-          return new Response(JSON.stringify({ error: "Спроба фальсифікації запиту!" }), { status: 403 });
-        }
-
-        const rawData = await env.LEADERBOARD.get("top_scores");
-        let scores = rawData ? JSON.parse(rawData) : [];
-
-        scores.push({ 
-          username: username, 
-          score: Math.floor(score), 
-          date: new Date().toLocaleDateString() 
-        });
-
-        scores.sort((a, b) => b.score - a.score);
-        scores = scores.slice(0, 10);
-
-        await env.LEADERBOARD.put("top_scores", JSON.stringify(scores));
-
-        return new Response(JSON.stringify(scores), {
+        return new Response(JSON.stringify({ sessionId }), {
           headers: { "Content-Type": "application/json" }
         });
       } catch (err) {
@@ -71,59 +42,100 @@ export default {
       }
     }
 
-    // --- FRONTEND (HTML + CANVAS) ---
-    if (request.method === "GET") {
+    // --- СЕРВЕРНА РЕЄСТРАЦІЯ ПОДІЇ (Постріл / Перемога) ---
+    if (url.pathname === "/api/game-action" && request.method === "POST") {
+      try {
+        const { sessionId, action, damageDealt } = await request.json();
+        const rawSession = await env.LEADERBOARD.get("session:" + sessionId);
 
-      // 1. ВІДКРИТИЙ КЛІЄНТСЬКИЙ КОД ГРИ
+        if (!rawSession) {
+          return new Response(JSON.stringify({ error: "Недійсна сесія" }), { status: 403 });
+        }
+
+        let session = JSON.parse(rawSession);
+
+        if (action === "SHOOT") {
+          session.playerParts = Math.max(0, session.playerParts - 1);
+          session.score = Math.max(0, session.score - 10); // Штраф за постріл
+        } else if (action === "HIT_ENEMY") {
+          // Сервер сам нараховує очки на основі валідного ураження
+          const validatedDamage = Math.min(3, Math.max(1, Number(damageDealt) || 1));
+          session.enemyParts = Math.max(0, session.enemyParts - validatedDamage);
+          session.score += validatedDamage * 60;
+        } else if (action === "WIN") {
+          if (session.enemyParts <= 0 && session.playerParts > 0) {
+            session.score += session.playerParts * 50; // Бонус за живі шматки
+
+            // Записуємо в ТОП-10
+            const rawData = await env.LEADERBOARD.get("top_scores");
+            let scores = rawData ? JSON.parse(rawData) : [];
+
+            scores.push({
+              username: session.username,
+              score: session.score,
+              date: new Date().toLocaleDateString()
+            });
+
+            scores.sort((a, b) => b.score - a.score);
+            scores = scores.slice(0, 10);
+
+            await env.LEADERBOARD.put("top_scores", JSON.stringify(scores));
+            await env.LEADERBOARD.delete("session:" + sessionId); // Закриваємо сесію
+
+            return new Response(JSON.stringify({ status: "SAVED", finalScore: session.score }), {
+              headers: { "Content-Type": "application/json" }
+            });
+          }
+        }
+
+        await env.LEADERBOARD.put("session:" + sessionId, JSON.stringify(session), { expirationTtl: 1800 });
+
+        return new Response(JSON.stringify({ score: session.score, playerParts: session.playerParts, enemyParts: session.enemyParts }), {
+          headers: { "Content-Type": "application/json" }
+        });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: err.message }), { status: 500 });
+      }
+    }
+
+    // --- FRONTEND (HTML + SSR LEADERBOARD) ---
+    if (request.method === "GET") {
+      // 1. Читаємо лідерборд на СЕРВЕРІ та вшиваємо прямо в HTML (Без JSON API)
+      const rawData = await env.LEADERBOARD.get("top_scores");
+      const scores = rawData ? JSON.parse(rawData) : [];
+
+      let leaderboardHtml = "";
+      if (scores.length === 0) {
+        leaderboardHtml = "<li><i>Поки немає рекордів</i></li>";
+      } else {
+        scores.forEach((item, idx) => {
+          leaderboardHtml += `<li><span>${idx + 1}. ${sanitize(item.username)}</span> <b>${item.score}</b></li>`;
+        });
+      }
+
+      // 2. КЛІЄНТСЬКИЙ СКРИПТ (Без секретних ключів та без прямого запису очок)
       const rawGameScript = `
-        window.username = "Гравець";
+        window.sessionId = null;
         window.score = 0;
 
-        function safeHTML(str) {
-          const div = document.createElement('div');
-          div.textContent = str;
-          return div.innerHTML;
-        }
-
-        window.startGame = function() {
+        window.startGame = async function() {
           const val = document.getElementById('usernameInput').value.trim();
-          if (val) window.username = val;
-          document.getElementById('displayName').innerText = window.username;
-          document.getElementById('nameModal').style.display = 'none';
-          loadLeaderboard();
-        };
-
-        async function loadLeaderboard() {
+          const username = val || "Гравець";
+          
           try {
-            const res = await fetch('/api/leaderboard');
-            const data = await res.json();
-            const list = document.getElementById('leaderboardList');
-            list.innerHTML = '';
-            if (!data || data.length === 0) {
-              list.innerHTML = '<li><i>Поки немає рекордів</i></li>';
-              return;
-            }
-            data.forEach((item, idx) => {
-              list.innerHTML += \`<li><span>\${idx + 1}. \${safeHTML(item.username)}</span> <b>\${item.score}</b></li>\`;
-            });
-          } catch(e){}
-        }
-
-        async function saveScore(finalScore) {
-          try {
-            const secretCheck = btoa(window.username + finalScore + "candy_secret_key").slice(0, 16);
-            await fetch('/api/leaderboard', {
+            const res = await fetch('/api/start-session', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ 
-                username: window.username, 
-                score: finalScore,
-                secretCheck: secretCheck
-              })
+              body: JSON.stringify({ username })
             });
-            loadLeaderboard();
-          } catch(e){}
-        }
+            const data = await res.json();
+            window.sessionId = data.sessionId;
+            document.getElementById('displayName').innerText = username;
+            document.getElementById('nameModal').style.display = 'none';
+          } catch(e) {
+            alert('Помилка старту сесії!');
+          }
+        };
 
         const canvas = document.getElementById('gameCanvas');
         const ctx = canvas.getContext('2d');
@@ -182,7 +194,7 @@ export default {
 
           if (isOffSides || isFellBottom) {
             b.partsCount = 0;
-            const msg = b === player ? '😱 ' + safeHTML(name) + ' випав за межі карти!' : '🎉 Ворог випав у прірву!';
+            const msg = b === player ? '😱 Ви випали за межі карти!' : '🎉 Ворог випав у прірву!';
             const partsId = b === player ? 'p1-parts' : 'p2-parts';
             document.getElementById(partsId).innerText = '0/10';
             alert(msg);
@@ -197,13 +209,23 @@ export default {
           if (e.code === 'Space' && player.isCharging && turn === 'PLAYER') playerShoot();
         });
 
-        function playerShoot() {
+        async function playerShoot() {
           player.isCharging = false;
-          if (player.partsCount <= 0) return;
+          if (player.partsCount <= 0 || !window.sessionId) return;
+
           player.partsCount--;
-          window.score = Math.max(0, window.score - 10);
-          document.getElementById('scoreDisplay').innerText = window.score;
           document.getElementById('p1-parts').innerText = player.partsCount + '/10';
+
+          // Повідомляємо сервер про факт пострілу
+          const res = await fetch('/api/game-action', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ sessionId: window.sessionId, action: 'SHOOT' })
+          });
+          const data = await res.json();
+          window.score = data.score;
+          document.getElementById('scoreDisplay').innerText = window.score;
+
           const lastPart = BEAR_PARTS[player.partsCount];
           bullet = {
             x: player.x + lastPart.dx, y: player.y + lastPart.dy,
@@ -256,7 +278,7 @@ export default {
             if (keys['KeyS'] && player.angle < -0.1) player.angle += 0.03;
             if (keys['Space'] && !bullet) { player.isCharging = true; if (player.power < 100) player.power += 2.5; }
           }
-          if (checkOutOfBounds(player, window.username) || checkOutOfBounds(enemy, 'Ворожий ведмедик')) { handleEndGame(); return; }
+          if (checkOutOfBounds(player, "Гравець") || checkOutOfBounds(enemy, "Ворожий ведмедик")) { handleEndGame(); return; }
           if (bullet) {
             bullet.x += bullet.vx; bullet.y += bullet.vy; bullet.vy += 0.18; bullet.vx += wind * 0.1;
             const xIdx = Math.floor(bullet.x);
@@ -265,7 +287,7 @@ export default {
           }
         }
 
-        function explode(ex, ey, owner) {
+        async function explode(ex, ey, owner) {
           const blastRadius = 26;
           [player, enemy].forEach(b => {
             const dist = Math.hypot(b.x - ex, b.y - ey);
@@ -281,16 +303,16 @@ export default {
           }
           if (owner === 'ENEMY') enemy.lastError = ex < player.x ? 3 : -3;
           
-          checkSegmentHits(player, 'p1-parts', ex, ey, blastRadius, owner);
-          checkSegmentHits(enemy, 'p2-parts', ex, ey, blastRadius, owner);
+          await checkSegmentHits(player, 'p1-parts', ex, ey, blastRadius, owner);
+          await checkSegmentHits(enemy, 'p2-parts', ex, ey, blastRadius, owner);
 
           wind += (Math.random() * 0.1 - 0.05); wind = Math.max(-0.4, Math.min(0.4, wind)); updateWindDisplay();
-          if (enemy.partsCount <= 0 || player.partsCount <= 0 || checkOutOfBounds(player, window.username) || checkOutOfBounds(enemy, 'Ворожий ведмедик')) { handleEndGame(); return; }
+          if (enemy.partsCount <= 0 || player.partsCount <= 0 || checkOutOfBounds(player, "Гравець") || checkOutOfBounds(enemy, "Ворожий ведмедик")) { handleEndGame(); return; }
           if (owner === 'PLAYER') { turn = 'ENEMY'; enemyTurn(); }
           else { turn = 'PLAYER'; document.getElementById('turn-info').innerText = 'Хід: Ваш хід (🟩 Зелений)'; }
         }
 
-        function checkSegmentHits(target, elementId, ex, ey, blastRadius, owner) {
+        async function checkSegmentHits(target, elementId, ex, ey, blastRadius, owner) {
           if (target.partsCount <= 0) return;
           let totalDamage = 0; let directHit = false;
 
@@ -314,26 +336,34 @@ export default {
             target.partsCount -= finalPartsToRemove;
             
             if (owner === 'PLAYER' && target === enemy) {
-              window.score += finalPartsToRemove * 60;
-              if (directHit) window.score += 50;
+              // Надсилаємо факт ураження на сервер
+              const res = await fetch('/api/game-action', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ sessionId: window.sessionId, action: 'HIT_ENEMY', damageDealt: finalPartsToRemove })
+              });
+              const data = await res.json();
+              window.score = data.score;
               document.getElementById('scoreDisplay').innerText = window.score;
             }
             document.getElementById(elementId).innerText = target.partsCount + '/10';
           }
         }
 
-        function handleEndGame() {
+        async function handleEndGame() {
           if (enemy.partsCount <= 0 && player.partsCount > 0) {
-            window.score += player.partsCount * 50; document.getElementById('scoreDisplay').innerText = window.score;
-            alert('🎉 ПЕРЕМОГА! Рахунок: ' + window.score); saveScore(window.score);
-          } else { alert('😱 Поразка! Рахунок: ' + window.score); }
-          resetGame();
-        }
-
-        function resetGame() {
-          player.partsCount = 10; enemy.partsCount = 10; window.score = 0;
-          document.getElementById('scoreDisplay').innerText = '0'; document.getElementById('p1-parts').innerText = '10/10'; document.getElementById('p2-parts').innerText = '10/10';
-          turn = 'PLAYER'; document.getElementById('turn-info').innerText = 'Хід: Ваш хід (🟩 Зелений)'; generateTerrain(); player.x = 80 + Math.random()*60; enemy.x = 600 + Math.random()*80;
+            // Запит на серверну фіксацію перемоги
+            const res = await fetch('/api/game-action', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ sessionId: window.sessionId, action: 'WIN' })
+            });
+            const data = await res.json();
+            alert('🎉 ПЕРЕМОГА! Оновіть сторінку, щоб побачити себе у ТОП-10! Підсумковий рахунок: ' + data.finalScore);
+          } else { 
+            alert('😱 Поразка!'); 
+          }
+          location.reload(); // Перезавантажуємо сторінку для оновлення SSR лідерборду
         }
 
         function draw() {
@@ -360,22 +390,18 @@ export default {
         loop();
       `;
 
-      // 2. БЕЗПЕЧНА ДИНАМІЧНА ОБФУСКАЦІЯ (Base64 Encoding через UTF-8 TextEncoder)
+      // Динамічне заплутування коду через TextEncoder
       const uint8Array = new TextEncoder().encode(rawGameScript);
       let binaryStr = '';
-      for (let i = 0; i < uint8Array.length; i++) {
-        binaryStr += String.fromCharCode(uint8Array[i]);
-      }
+      for (let i = 0; i < uint8Array.length; i++) binaryStr += String.fromCharCode(uint8Array[i]);
       const encodedScript = btoa(binaryStr);
 
-      // 3. СТВОРЕННЯ ДИНАМІЧНОГО ЕЛЕМЕНТА SCRIPT У BROWSER DOM
       const obfuscatedLoader = `
         (function(){
           var bin = atob("${encodedScript}");
           var bytes = new Uint8Array(bin.length);
           for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
           var decodedScript = new TextDecoder().decode(bytes);
-          
           var scriptEl = document.createElement('script');
           scriptEl.textContent = decodedScript;
           document.head.appendChild(scriptEl);
@@ -438,8 +464,8 @@ export default {
 
     <div class="leaderboard-card">
       <h3>🏆 ТОП-10 ЛІДЕРІВ</h3>
-      <ol id="leaderboardList" class="leaderboard-list">
-        <li>Завантаження...</li>
+      <ol class="leaderboard-list">
+        ${leaderboardHtml}
       </ol>
     </div>
   </div>

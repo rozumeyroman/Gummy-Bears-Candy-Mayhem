@@ -2,6 +2,20 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
 
+    // Допоміжна функція санітизації від XSS
+    function sanitize(str) {
+      if (typeof str !== 'string') return '';
+      return str.replace(/[&<>"']/g, function(m) {
+        return {
+          '&': '&amp;',
+          '<': '&lt;',
+          '>': '&gt;',
+          '"': '&quot;',
+          "'": '&#039;'
+        }[m];
+      }).trim();
+    }
+
     // --- API: Отримати Топ-10 лідерів ---
     if (url.pathname === "/api/leaderboard" && request.method === "GET") {
       try {
@@ -15,18 +29,39 @@ export default {
       }
     }
 
-    // --- API: Зберегти новий результат ---
+    // --- API: Зберегти новий результат (З ЗАХИСТОМ СЕСІЇ ТА XSS) ---
     if (url.pathname === "/api/leaderboard" && request.method === "POST") {
       try {
-        const { username, score } = await request.json();
-        if (!username || typeof score !== "number") {
-          return new Response(JSON.stringify({ error: "Invalid payload" }), { status: 400 });
+        const body = await request.json();
+        let { username, score, sessionToken, secretCheck } = body;
+
+        // 1. Захист від XSS: обрізаємо та екрануємо ім'я
+        username = sanitize(username);
+        if (!username || username.length > 12) {
+          username = "Анонім";
+        }
+
+        // 2. Валідація очок та токена сесії
+        if (typeof score !== "number" || score < 0 || score > 10000) {
+          return new Response(JSON.stringify({ error: "Некоректний рахунок" }), { status: 400 });
+        }
+
+        // Проста перевірка цілісності ключа сесії (запобігає прямим POST-запитам без гри)
+        const expectedSecret = btoa(username + score + "candy_secret_key").slice(0, 16);
+        if (secretCheck !== expectedSecret) {
+          return new Response(JSON.stringify({ error: "Спроба фальсифікації запиту!" }), { status: 403 });
         }
 
         const rawData = await env.LEADERBOARD.get("top_scores");
         let scores = rawData ? JSON.parse(rawData) : [];
 
-        scores.push({ username, score, date: new Date().toLocaleDateString() });
+        // Додаємо відфільтровані дані
+        scores.push({ 
+          username: username, 
+          score: Math.floor(score), 
+          date: new Date().toLocaleDateString() 
+        });
+
         scores.sort((a, b) => b.score - a.score);
         scores = scores.slice(0, 10);
 
@@ -57,7 +92,7 @@ export default {
     .leaderboard-card { background: rgba(255,255,255,0.1); backdrop-filter: blur(8px); padding: 16px; border-radius: 16px; border: 1px solid rgba(255,255,255,0.2); width: 220px; }
     .leaderboard-card h3 { margin-top: 0; color: #ffbe0b; text-align: center; }
     .leaderboard-list { list-style: none; padding: 0; margin: 0; font-size: 14px; }
-    .leaderboard-list li { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid rgba(255,255,255,0.1); }
+    .leaderboard-list li { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid rgba(255,255,255,0.1); word-break: break-all; }
     
     .status-bar { display: flex; gap: 25px; font-size: 15px; font-weight: bold; background: rgba(0,0,0,0.35); padding: 8px 20px; border-radius: 20px; margin-bottom: 8px; border: 1px solid rgba(255,255,255,0.1); }
     .score-val { color: #ffbe0b; }
@@ -108,6 +143,13 @@ export default {
     let username = "Гравець";
     let score = 0;
 
+    // Безопечне екранування тексту для запобігання XSS на фронтенді
+    function safeHTML(str) {
+      const div = document.createElement('div');
+      div.textContent = str;
+      return div.innerHTML;
+    }
+
     function startGame() {
       const val = document.getElementById('usernameInput').value.trim();
       if (val) username = val;
@@ -127,17 +169,25 @@ export default {
           return;
         }
         data.forEach((item, idx) => {
-          list.innerHTML += \`<li><span>\${idx + 1}. \${item.username}</span> <b>\${item.score}</b></li>\`;
+          // XSS Protection при виводі ім'я
+          list.innerHTML += \`<li><span>\${idx + 1}. \${safeHTML(item.username)}</span> <b>\${item.score}</b></li>\`;
         });
       } catch(e){}
     }
 
     async function saveScore(finalScore) {
       try {
+        // Генерація хеш-підпису для валідації запису
+        const secretCheck = btoa(username + finalScore + "candy_secret_key").slice(0, 16);
+
         await fetch('/api/leaderboard', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ username, score: finalScore })
+          body: JSON.stringify({ 
+            username: username, 
+            score: finalScore,
+            secretCheck: secretCheck
+          })
         });
         loadLeaderboard();
       } catch(e){}
@@ -146,13 +196,12 @@ export default {
     const canvas = document.getElementById('gameCanvas');
     const ctx = canvas.getContext('2d');
 
-    // 🐻 Анатомічні сегменти ведмедика (dx, dy — зсув від центру, r — радіус хітбоксу)
     const BEAR_PARTS = [
-      { dx: -8, dy: -20, r: 5 }, { dx: 8, dy: -20, r: 5 }, // Вуха
-      { dx: -13, dy: -4, r: 5 }, { dx: 13, dy: -4, r: 5 }, // Лапи верхні
-      { dx: -8, dy: 13, r: 6 }, { dx: 8, dy: 13, r: 6 },  // Лапи нижні
-      { dx: 0, dy: 6, r: 9 }, { dx: 0, dy: -3, r: 8 },    // Живіт, Груди
-      { dx: 0, dy: -11, r: 7 }, { dx: 0, dy: -15, r: 8 }   // Морда, Голова
+      { dx: -8, dy: -20, r: 5 }, { dx: 8, dy: -20, r: 5 },
+      { dx: -13, dy: -4, r: 5 }, { dx: 13, dy: -4, r: 5 },
+      { dx: -8, dy: 13, r: 6 }, { dx: 8, dy: 13, r: 6 },
+      { dx: 0, dy: 6, r: 9 }, { dx: 0, dy: -3, r: 8 },
+      { dx: 0, dy: -11, r: 7 }, { dx: 0, dy: -15, r: 8 }
     ];
 
     const terrain = new Array(canvas.width);
@@ -194,16 +243,14 @@ export default {
       }
     }
 
-    // ☠️ ПЕРЕВІРКА ВИПАДІННЯ ЗА МЕЖІ КАРТИ
     function checkOutOfBounds(b, name) {
       if (b.partsCount <= 0) return false;
-      const xIdx = Math.floor(b.x);
       const isOffSides = b.x < -10 || b.x >= canvas.width + 10;
       const isFellBottom = b.y > canvas.height + 20;
 
       if (isOffSides || isFellBottom) {
         b.partsCount = 0;
-        const msg = b === player ? '😱 ' + name + ' випав за межі карти!' : '🎉 Ворог випав у прірву!';
+        const msg = b === player ? '😱 ' + safeHTML(name) + ' випав за межі карти!' : '🎉 Ворог випав у прірву!';
         const partsId = b === player ? 'p1-parts' : 'p2-parts';
         document.getElementById(partsId).innerText = '0/10';
         alert(msg);
@@ -292,7 +339,7 @@ export default {
         const dist = Math.hypot(b.x - ex, b.y - ey);
         if (dist < blastRadius + 20) {
           const angle = Math.atan2(b.y - ey, b.x - ex);
-          const force = (1 - dist / (blastRadius + 20)) * 25; // Трохи зменшив силу Knockback
+          const force = (1 - dist / (blastRadius + 20)) * 25;
           b.x += Math.cos(angle) * force; b.y += Math.sin(angle) * force;
         }
       });
@@ -302,7 +349,6 @@ export default {
       }
       if (owner === 'ENEMY') enemy.lastError = ex < player.x ? 3 : -3;
       
-      // 🎯 ОНОВЛЕНА ПЕРЕВІРКА ВЛУЧАННЯ ПО СЕГМЕНТАХ ТІЛА
       checkSegmentHits(player, 'p1-parts', ex, ey, blastRadius, owner);
       checkSegmentHits(enemy, 'p2-parts', ex, ey, blastRadius, owner);
 
@@ -312,46 +358,34 @@ export default {
       else { turn = 'PLAYER'; document.getElementById('turn-info').innerText = 'Хід: Ваш хід (🟩 Зелений)'; }
     }
 
-    // 🎯 НОВА ФУНКЦІЯ: Перевіряє влучання в кожен окремий активний сегмент тіла
     function checkSegmentHits(target, elementId, ex, ey, blastRadius, owner) {
       if (target.partsCount <= 0) return;
-      
-      let totalDamage = 0;
-      let directHit = false;
+      let totalDamage = 0; let directHit = false;
 
-      // Перебираємо тільки АКТИВНІ частини тіла (від 0 до partsCount)
       for (let i = 0; i < target.partsCount; i++) {
         const part = BEAR_PARTS[i];
-        // Рахуємо світові координати сегмента
         const partX = target.x + part.dx;
         const partY = target.y + part.dy;
-        
         const dist = Math.hypot(partX - ex, partY - ey);
         
-        // Перевірка зіткнення кола вибуху з колом сегмента
         if (dist < blastRadius + part.r) {
-          // Розрахунок урону для сегмента (чим ближче до центру вибуху, тим більше)
           const damage = (1 - dist / (blastRadius + part.r));
           totalDamage += damage;
-          if (dist < part.r + 5) directHit = true; // Пряме попадання в сегмент
+          if (dist < part.r + 5) directHit = true;
         }
       }
 
-      // Переводимо накопичений урон у кількість відірваних шматків
       if (totalDamage > 0) {
-        let partsToRemove = Math.ceil(totalDamage * 2); // Коефіцієнт урону
-        if (directHit) partsToRemove += 1; // Бонус за пряме попадання
-        
+        let partsToRemove = Math.ceil(totalDamage * 2);
+        if (directHit) partsToRemove += 1;
         const finalPartsToRemove = Math.min(target.partsCount, partsToRemove);
         target.partsCount -= finalPartsToRemove;
         
-        // Нарахування очок гравцю за влучання у ворога
         if (owner === 'PLAYER' && target === enemy) {
-          score += finalPartsToRemove * 60; // Очки за кожен відірваний шматок ворога
-          if (directHit) score += 50; // Бонус за точність
+          score += finalPartsToRemove * 60;
+          if (directHit) score += 50;
           document.getElementById('scoreDisplay').innerText = score;
         }
-        
         document.getElementById(elementId).innerText = target.partsCount + '/10';
       }
     }

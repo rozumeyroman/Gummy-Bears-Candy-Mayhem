@@ -126,10 +126,13 @@ export default {
     .leaderboard-list { list-style: none; padding: 0; margin: 0; font-size: 14px; }
     .leaderboard-list li { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid rgba(255,255,255,0.1); word-break: break-all; }
     
-    .status-bar { display: flex; gap: 25px; font-size: 15px; font-weight: bold; background: rgba(0,0,0,0.35); padding: 8px 20px; border-radius: 20px; margin-bottom: 8px; border: 1px solid rgba(255,255,255,0.1); }
+    .status-bar { display: flex; gap: 20px; align-items: center; font-size: 15px; font-weight: bold; background: rgba(0,0,0,0.35); padding: 8px 20px; border-radius: 20px; margin-bottom: 8px; border: 1px solid rgba(255,255,255,0.1); }
     .score-val { color: #ffbe0b; }
     .turn-text { color: #4ecca3; font-size: 14px; text-align: center; margin-bottom: 5px; height: 18px; }
     
+    .edit-btn { background: none; border: none; cursor: pointer; font-size: 12px; margin-left: 4px; opacity: 0.7; }
+    .edit-btn:hover { opacity: 1; }
+
     #nameModal { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.85); display: flex; align-items: center; justify-content: center; z-index: 100; }
     .modal-box { background: #3d1e6d; padding: 30px; border-radius: 16px; text-align: center; border: 2px solid #ff75a0; width: 320px; box-shadow: 0 0 20px rgba(255,117,160,0.4); }
     .modal-box input { width: 85%; padding: 10px; border-radius: 8px; border: none; font-size: 16px; text-align: center; margin: 15px 0; outline: none; }
@@ -143,7 +146,8 @@ export default {
     <div class="modal-box">
       <h2>🍬 Ласкаво просимо!</h2>
       <p style="font-size: 14px; color: #ddd;">Введіть свій юзернейм для гри:</p>
-      <input type="text" id="usernameInput" placeholder="Гравець 1" maxlength="12">
+      <!-- Вимкнено автозаповнення паролів/iCloud -->
+      <input type="text" id="usernameInput" placeholder="Гравець 1" maxlength="12" autocomplete="off" name="no-autofill" data-1p-ignore>
       <button onclick="startGame()">Розпочати гру</button>
     </div>
   </div>
@@ -151,7 +155,7 @@ export default {
   <h1>🍬 Gummy Bears: Candy Mayhem 🍬</h1>
 
   <div class="status-bar">
-    <div>Гравець: <span id="displayName" style="color: #52b788;">—</span></div>
+    <div>Гравець: <span id="displayName" style="color: #52b788;">—</span><button class="edit-btn" onclick="openNameModal()" title="Змінити ім'я">✏️</button></div>
     <div>Очки: <span id="scoreDisplay" class="score-val">0</span></div>
     <div>🟩 Тіло: <span id="p1-parts">10/10</span></div>
     <div>🟥 Ворог: <span id="p2-parts">10/10</span></div>
@@ -174,22 +178,36 @@ export default {
   <script>
     window.sessionId = null;
     window.score = 0;
+    window.currentUsername = "Гравець";
 
-    // Автоматичне зчитування нікнейму з пам'яті браузера
     window.addEventListener('DOMContentLoaded', () => {
       const savedName = localStorage.getItem('gummy_username');
       if (savedName) {
+        window.currentUsername = savedName;
         document.getElementById('usernameInput').value = savedName;
-        startGame(savedName);
+        document.getElementById('displayName').innerText = savedName;
+        document.getElementById('nameModal').style.display = 'none';
+        initSession(savedName);
       }
     });
 
-    window.startGame = async function(overrideName) {
-      const val = overrideName || document.getElementById('usernameInput').value.trim();
-      const username = val || "Гравець";
-      
-      localStorage.setItem('gummy_username', username); // Зберігаємо нікнейм локально
+    function openNameModal() {
+      document.getElementById('nameModal').style.display = 'flex';
+    }
 
+    async function startGame() {
+      const val = document.getElementById('usernameInput').value.trim();
+      const username = val || "Гравець";
+      window.currentUsername = username;
+      localStorage.setItem('gummy_username', username);
+
+      document.getElementById('displayName').innerText = username;
+      document.getElementById('nameModal').style.display = 'none';
+
+      await initSession(username);
+    }
+
+    async function initSession(username) {
       try {
         const res = await fetch('/api/start-session', {
           method: 'POST',
@@ -198,12 +216,10 @@ export default {
         });
         const data = await res.json();
         window.sessionId = data.sessionId;
-        document.getElementById('displayName').innerText = username;
-        document.getElementById('nameModal').style.display = 'none';
       } catch(e) {
-        alert('Помилка старту сесії!');
+        console.error('Помилка відкриття сесії');
       }
-    };
+    }
 
     const canvas = document.getElementById('gameCanvas');
     const ctx = canvas.getContext('2d');
@@ -428,7 +444,22 @@ export default {
       } else { 
         alert('😱 Поразка!'); 
       }
-      location.reload();
+      resetGame();
+    }
+
+    async function resetGame() {
+      player.partsCount = 10; enemy.partsCount = 10; window.score = 0;
+      document.getElementById('scoreDisplay').innerText = '0'; 
+      document.getElementById('p1-parts').innerText = '10/10'; 
+      document.getElementById('p2-parts').innerText = '10/10';
+      turn = 'PLAYER'; 
+      document.getElementById('turn-info').innerText = 'Хід: Ваш хід (🟩 Зелений)'; 
+      generateTerrain(); 
+      player.x = 80 + Math.random()*60; 
+      enemy.x = 600 + Math.random()*80;
+
+      // Автоматичний старт нової сесії без показу модального вікна
+      await initSession(window.currentUsername);
     }
 
     function draw() {

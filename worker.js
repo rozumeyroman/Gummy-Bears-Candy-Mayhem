@@ -146,39 +146,28 @@ export default {
     const canvas = document.getElementById('gameCanvas');
     const ctx = canvas.getContext('2d');
 
+    // 🐻 Анатомічні сегменти ведмедика (dx, dy — зсув від центру, r — радіус хітбоксу)
     const BEAR_PARTS = [
-      { dx: -8, dy: -20, r: 5 }, { dx: 8, dy: -20, r: 5 },
-      { dx: -13, dy: -4, r: 5 }, { dx: 13, dy: -4, r: 5 },
-      { dx: -8, dy: 13, r: 6 }, { dx: 8, dy: 13, r: 6 },
-      { dx: 0, dy: 6, r: 9 }, { dx: 0, dy: -3, r: 8 },
-      { dx: 0, dy: -11, r: 7 }, { dx: 0, dy: -15, r: 8 }
+      { dx: -8, dy: -20, r: 5 }, { dx: 8, dy: -20, r: 5 }, // Вуха
+      { dx: -13, dy: -4, r: 5 }, { dx: 13, dy: -4, r: 5 }, // Лапи верхні
+      { dx: -8, dy: 13, r: 6 }, { dx: 8, dy: 13, r: 6 },  // Лапи нижні
+      { dx: 0, dy: 6, r: 9 }, { dx: 0, dy: -3, r: 8 },    // Живіт, Груди
+      { dx: 0, dy: -11, r: 7 }, { dx: 0, dy: -15, r: 8 }   // Морда, Голова
     ];
 
     const terrain = new Array(canvas.width);
-
-    // 🏔️ ВАРІАТИВНА ГЕНЕРАЦІЯ НОВОГО ЛАНДШАФТУ ЩОРАЗУ
     function generateTerrain() {
-      const type = Math.floor(Math.random() * 4); // 4 унікальних типи карти
+      const type = Math.floor(Math.random() * 4);
       const baseHeight = 220 + Math.random() * 80;
       const freq1 = 0.008 + Math.random() * 0.01;
       const freq2 = 0.02 + Math.random() * 0.02;
 
       for (let x = 0; x < canvas.width; x++) {
         let h = baseHeight;
-        if (type === 0) {
-          // Пагорби
-          h += Math.sin(x * freq1) * 60 + Math.cos(x * freq2) * 20;
-        } else if (type === 1) {
-          // Каньйон / Улоговина по центру
-          const centerDist = Math.abs(x - canvas.width / 2);
-          h += Math.sin(x * freq1) * 40 + (centerDist < 150 ? 50 : -20);
-        } else if (type === 2) {
-          // Гострі скелі
-          h += Math.sin(x * freq1) * 50 + Math.sin(x * 0.05) * 15;
-        } else {
-          // Каскадні хвилі
-          h += Math.cos(x * freq1) * 70 + Math.sin(x * freq2) * 25;
-        }
+        if (type === 0) h += Math.sin(x * freq1) * 60 + Math.cos(x * freq2) * 20;
+        else if (type === 1) h += Math.sin(x * freq1) * 40 + (Math.abs(x - canvas.width / 2) < 150 ? 50 : -20);
+        else if (type === 2) h += Math.sin(x * freq1) * 50 + Math.sin(x * 0.05) * 15;
+        else h += Math.cos(x * freq1) * 70 + Math.sin(x * freq2) * 25;
         terrain[x] = Math.max(120, Math.min(380, h));
       }
     }
@@ -193,37 +182,31 @@ export default {
 
     let turn = 'PLAYER';
 
-    const player = { x: 100, y: 0, radius: 10, partsCount: 10, color: '#52b788', highlight: '#74c69d', angle: -Math.PI / 4, power: 0, isCharging: false, vx: 0, vy: 0 };
-    const enemy = { x: 650, y: 0, radius: 10, partsCount: 10, color: '#ff4d6d', highlight: '#ff758f', angle: -Math.PI * 0.75, power: 0, lastError: 0, vx: 0, vy: 0 };
+    const player = { x: 100, y: 0, radius: 10, partsCount: 10, color: '#52b788', highlight: '#74c69d', angle: -Math.PI / 4, power: 0, isCharging: false };
+    const enemy = { x: 650, y: 0, radius: 10, partsCount: 10, color: '#ff4d6d', highlight: '#ff758f', angle: -Math.PI * 0.75, power: 0, lastError: 0 };
     let bullet = null;
     const keys = {};
 
     function updateY(e) {
-      // Перевірка чи знаходиться на суші
       const xIdx = Math.floor(e.x);
       if (xIdx >= 0 && xIdx < canvas.width) {
         e.y = terrain[xIdx] - 5;
       }
     }
 
-    // ☠️ ПЕРЕВІРКА ВИПАДІННЯ ЗА МЕЖІ КАРТИ (СМЕРТЬ ВІД ПАДІННЯ В ПРІРВУ)
+    // ☠️ ПЕРЕВІРКА ВИПАДІННЯ ЗА МЕЖІ КАРТИ
     function checkOutOfBounds(b, name) {
       if (b.partsCount <= 0) return false;
-      
       const xIdx = Math.floor(b.x);
-      const isOffSides = b.x < 0 || b.x >= canvas.width;
-      const isDrowned = xIdx >= 0 && xIdx < canvas.width && b.y > terrain[xIdx] + 30;
-      const isFellBottom = b.y > canvas.height;
+      const isOffSides = b.x < -10 || b.x >= canvas.width + 10;
+      const isFellBottom = b.y > canvas.height + 20;
 
-      if (isOffSides || isDrowned || isFellBottom) {
+      if (isOffSides || isFellBottom) {
         b.partsCount = 0;
-        if (b === player) {
-          document.getElementById('p1-parts').innerText = '0/10';
-          alert('😱 ' + name + ' випав за межі карти та загинув!');
-        } else {
-          document.getElementById('p2-parts').innerText = '0/10';
-          alert('🎉 ' + name + ' випав у прірву за межі карти!');
-        }
+        const msg = b === player ? '😱 ' + name + ' випав за межі карти!' : '🎉 Ворог випав у прірву!';
+        const partsId = b === player ? 'p1-parts' : 'p2-parts';
+        document.getElementById(partsId).innerText = '0/10';
+        alert(msg);
         return true;
       }
       return false;
@@ -238,12 +221,10 @@ export default {
     function playerShoot() {
       player.isCharging = false;
       if (player.partsCount <= 0) return;
-
       player.partsCount--;
       score = Math.max(0, score - 10);
       document.getElementById('scoreDisplay').innerText = score;
       document.getElementById('p1-parts').innerText = player.partsCount + '/10';
-
       const lastPart = BEAR_PARTS[player.partsCount];
       bullet = {
         x: player.x + lastPart.dx, y: player.y + lastPart.dy,
@@ -258,13 +239,11 @@ export default {
     function enemyTurn() {
       if (enemy.partsCount <= 0) return;
       document.getElementById('turn-info').innerText = 'Хід: Ворог думає... (🟥 Червоний)';
-
       setTimeout(() => {
         let bestPower = 50, bestAngle = -Math.PI * 0.72, minDist = 9999;
         for (let a = -Math.PI * 0.85; a <= -Math.PI * 0.55; a += 0.05) {
           for (let p = 20; p <= 100; p += 5) {
-            let simX = enemy.x, simY = enemy.y - 10;
-            let simVx = Math.cos(a) * (p / 4.5), simVy = Math.sin(a) * (p / 4.5);
+            let simX = enemy.x, simY = enemy.y - 10, simVx = Math.cos(a) * (p / 4.5), simVy = Math.sin(a) * (p / 4.5);
             for (let s = 0; s < 120; s++) {
               simX += simVx; simY += simVy; simVy += 0.18; simVx += wind * 0.1;
               const terY = terrain[Math.min(canvas.width - 1, Math.max(0, Math.floor(simX)))];
@@ -276,14 +255,11 @@ export default {
             }
           }
         }
-
         enemy.angle = bestAngle + (Math.random() * 0.04 - 0.02);
         enemy.power = Math.min(100, Math.max(10, bestPower + enemy.lastError + (Math.random() * 4 - 2)));
-
         enemy.partsCount--;
         document.getElementById('p2-parts').innerText = enemy.partsCount + '/10';
         const lastPart = BEAR_PARTS[enemy.partsCount];
-
         bullet = {
           x: enemy.x + lastPart.dx, y: enemy.y + lastPart.dy,
           vx: Math.cos(enemy.angle) * (enemy.power / 4.5), vy: Math.sin(enemy.angle) * (enemy.power / 4.5),
@@ -294,114 +270,104 @@ export default {
 
     function update() {
       updateY(player); updateY(enemy);
-
       if (turn === 'PLAYER' && player.partsCount > 0) {
         if (keys['KeyA'] && player.x > 5) player.x -= 1.8;
         if (keys['KeyD'] && player.x < canvas.width - 5) player.x += 1.8;
         if (keys['KeyW'] && player.angle > -Math.PI + 0.1) player.angle -= 0.03;
         if (keys['KeyS'] && player.angle < -0.1) player.angle += 0.03;
-        if (keys['Space'] && !bullet) {
-          player.isCharging = true;
-          if (player.power < 100) player.power += 2.5;
-        }
+        if (keys['Space'] && !bullet) { player.isCharging = true; if (player.power < 100) player.power += 2.5; }
       }
-
-      // Перевірка падіння гравців за межі карти
-      if (checkOutOfBounds(player, username) || checkOutOfBounds(enemy, 'Ворожий ведмедик')) {
-        handleEndGame();
-        return;
-      }
-
+      if (checkOutOfBounds(player, username) || checkOutOfBounds(enemy, 'Ворожий ведмедик')) { handleEndGame(); return; }
       if (bullet) {
-        bullet.x += bullet.vx; bullet.y += bullet.vy;
-        bullet.vy += 0.18; bullet.vx += wind * 0.1;
-
+        bullet.x += bullet.vx; bullet.y += bullet.vy; bullet.vy += 0.18; bullet.vx += wind * 0.1;
         const xIdx = Math.floor(bullet.x);
         const terrainY = (xIdx >= 0 && xIdx < canvas.width) ? terrain[xIdx] : 9999;
-
-        if (bullet.x < -50 || bullet.x >= canvas.width + 50 || bullet.y >= terrainY) {
-          explode(bullet.x, bullet.y, bullet.owner);
-          bullet = null;
-        }
+        if (bullet.x < -50 || bullet.x >= canvas.width + 50 || bullet.y >= terrainY) { explode(bullet.x, bullet.y, bullet.owner); bullet = null; }
       }
     }
 
     function explode(ex, ey, owner) {
       const blastRadius = 26;
-
-      // Відкидання гравців вибуховою хвилею (Knockback)
       [player, enemy].forEach(b => {
         const dist = Math.hypot(b.x - ex, b.y - ey);
         if (dist < blastRadius + 20) {
           const angle = Math.atan2(b.y - ey, b.x - ex);
-          const force = (1 - dist / (blastRadius + 20)) * 30;
-          b.x += Math.cos(angle) * force;
-          b.y += Math.sin(angle) * force;
+          const force = (1 - dist / (blastRadius + 20)) * 25; // Трохи зменшив силу Knockback
+          b.x += Math.cos(angle) * force; b.y += Math.sin(angle) * force;
         }
       });
-
-      // Руйнування землі
       for (let x = Math.max(0, Math.floor(ex - blastRadius)); x < Math.min(canvas.width, Math.floor(ex + blastRadius)); x++) {
-        const dist = Math.abs(x - ex);
-        const depth = Math.sqrt(blastRadius * blastRadius - dist * dist);
+        const dist = Math.abs(x - ex); const depth = Math.sqrt(blastRadius * blastRadius - dist * dist);
         if (ey + depth > terrain[x]) terrain[x] = Math.max(terrain[x], ey + depth);
       }
+      if (owner === 'ENEMY') enemy.lastError = ex < player.x ? 3 : -3;
+      
+      // 🎯 ОНОВЛЕНА ПЕРЕВІРКА ВЛУЧАННЯ ПО СЕГМЕНТАХ ТІЛА
+      checkSegmentHits(player, 'p1-parts', ex, ey, blastRadius, owner);
+      checkSegmentHits(enemy, 'p2-parts', ex, ey, blastRadius, owner);
 
-      if (owner === 'ENEMY') {
-        enemy.lastError = ex < player.x ? 3 : -3;
-      }
-
-      const distToEnemy = Math.hypot(enemy.x - ex, enemy.y - ey);
-      if (owner === 'PLAYER' && distToEnemy < blastRadius + enemy.radius) {
-        const hitScore = Math.floor((1 - distToEnemy / (blastRadius + enemy.radius)) * 150);
-        score += hitScore;
-        document.getElementById('scoreDisplay').innerText = score;
-        enemy.partsCount = Math.max(0, enemy.partsCount - 2);
-        document.getElementById('p2-parts').innerText = enemy.partsCount + '/10';
-      }
-
-      const distToPlayer = Math.hypot(player.x - ex, player.y - ey);
-      if (owner === 'ENEMY' && distToPlayer < blastRadius + player.radius) {
-        player.partsCount = Math.max(0, player.partsCount - 2);
-        document.getElementById('p1-parts').innerText = player.partsCount + '/10';
-      }
-
-      wind += (Math.random() * 0.1 - 0.05);
-      wind = Math.max(-0.4, Math.min(0.4, wind));
-      updateWindDisplay();
-
-      if (enemy.partsCount <= 0 || player.partsCount <= 0 || checkOutOfBounds(player, username) || checkOutOfBounds(enemy, 'Ворожий ведмедик')) {
-        handleEndGame();
-        return;
-      }
-
+      wind += (Math.random() * 0.1 - 0.05); wind = Math.max(-0.4, Math.min(0.4, wind)); updateWindDisplay();
+      if (enemy.partsCount <= 0 || player.partsCount <= 0 || checkOutOfBounds(player, username) || checkOutOfBounds(enemy, 'Ворожий ведмедик')) { handleEndGame(); return; }
       if (owner === 'PLAYER') { turn = 'ENEMY'; enemyTurn(); }
       else { turn = 'PLAYER'; document.getElementById('turn-info').innerText = 'Хід: Ваш хід (🟩 Зелений)'; }
     }
 
+    // 🎯 НОВА ФУНКЦІЯ: Перевіряє влучання в кожен окремий активний сегмент тіла
+    function checkSegmentHits(target, elementId, ex, ey, blastRadius, owner) {
+      if (target.partsCount <= 0) return;
+      
+      let totalDamage = 0;
+      let directHit = false;
+
+      // Перебираємо тільки АКТИВНІ частини тіла (від 0 до partsCount)
+      for (let i = 0; i < target.partsCount; i++) {
+        const part = BEAR_PARTS[i];
+        // Рахуємо світові координати сегмента
+        const partX = target.x + part.dx;
+        const partY = target.y + part.dy;
+        
+        const dist = Math.hypot(partX - ex, partY - ey);
+        
+        // Перевірка зіткнення кола вибуху з колом сегмента
+        if (dist < blastRadius + part.r) {
+          // Розрахунок урону для сегмента (чим ближче до центру вибуху, тим більше)
+          const damage = (1 - dist / (blastRadius + part.r));
+          totalDamage += damage;
+          if (dist < part.r + 5) directHit = true; // Пряме попадання в сегмент
+        }
+      }
+
+      // Переводимо накопичений урон у кількість відірваних шматків
+      if (totalDamage > 0) {
+        let partsToRemove = Math.ceil(totalDamage * 2); // Коефіцієнт урону
+        if (directHit) partsToRemove += 1; // Бонус за пряме попадання
+        
+        const finalPartsToRemove = Math.min(target.partsCount, partsToRemove);
+        target.partsCount -= finalPartsToRemove;
+        
+        // Нарахування очок гравцю за влучання у ворога
+        if (owner === 'PLAYER' && target === enemy) {
+          score += finalPartsToRemove * 60; // Очки за кожен відірваний шматок ворога
+          if (directHit) score += 50; // Бонус за точність
+          document.getElementById('scoreDisplay').innerText = score;
+        }
+        
+        document.getElementById(elementId).innerText = target.partsCount + '/10';
+      }
+    }
+
     function handleEndGame() {
       if (enemy.partsCount <= 0 && player.partsCount > 0) {
-        score += player.partsCount * 50;
-        document.getElementById('scoreDisplay').innerText = score;
-        alert('🎉 ПЕРЕМОГА! Ваш підсумковий рахунок: ' + score);
-        saveScore(score);
-      } else {
-        alert('😱 Поразка! Рахунок: ' + score);
-      }
+        score += player.partsCount * 50; document.getElementById('scoreDisplay').innerText = score;
+        alert('🎉 ПЕРЕМОГА! Рахунок: ' + score); saveScore(score);
+      } else { alert('😱 Поразка! Рахунок: ' + score); }
       resetGame();
     }
 
     function resetGame() {
       player.partsCount = 10; enemy.partsCount = 10; score = 0;
-      document.getElementById('scoreDisplay').innerText = '0';
-      document.getElementById('p1-parts').innerText = '10/10';
-      document.getElementById('p2-parts').innerText = '10/10';
-      turn = 'PLAYER';
-      document.getElementById('turn-info').innerText = 'Хід: Ваш хід (🟩 Зелений)';
-      
-      generateTerrain(); // Нова карта щоразу при скиданні
-      player.x = 80 + Math.random() * 60; 
-      enemy.x = 600 + Math.random() * 80;
+      document.getElementById('scoreDisplay').innerText = '0'; document.getElementById('p1-parts').innerText = '10/10'; document.getElementById('p2-parts').innerText = '10/10';
+      turn = 'PLAYER'; document.getElementById('turn-info').innerText = 'Хід: Ваш хід (🟩 Зелений)'; generateTerrain(); player.x = 80 + Math.random()*60; enemy.x = 600 + Math.random()*80;
     }
 
     function draw() {
@@ -409,30 +375,21 @@ export default {
       ctx.fillStyle = '#ffb5a7'; ctx.beginPath(); ctx.moveTo(0, canvas.height);
       for (let x = 0; x < canvas.width; x++) ctx.lineTo(x, terrain[x]);
       ctx.lineTo(canvas.width, canvas.height); ctx.fill();
-
       [player, enemy].forEach(b => {
         if (b.partsCount <= 0) return;
         ctx.save(); ctx.translate(b.x, b.y);
         for (let i = 0; i < b.partsCount; i++) {
-          const p = BEAR_PARTS[i];
-          ctx.fillStyle = b.color; ctx.beginPath(); ctx.arc(p.dx, p.dy, p.r, 0, Math.PI * 2); ctx.fill();
+          const p = BEAR_PARTS[i]; ctx.fillStyle = b.color; ctx.beginPath(); ctx.arc(p.dx, p.dy, p.r, 0, Math.PI * 2); ctx.fill();
+          ctx.fillStyle = b.highlight; ctx.beginPath(); ctx.arc(p.dx-p.r*0.3, p.dy-p.r*0.3, p.r*0.35, 0, Math.PI * 2); ctx.fill();
         }
         if (b === player && turn === 'PLAYER') {
-          ctx.strokeStyle = '#ffbe0b'; ctx.lineWidth = 2.5; ctx.beginPath(); ctx.moveTo(0, -10);
-          ctx.lineTo(Math.cos(b.angle) * 35, -10 + Math.sin(b.angle) * 35); ctx.stroke();
+          ctx.strokeStyle = '#ffbe0b'; ctx.lineWidth = 2.5; ctx.beginPath(); ctx.moveTo(0, -10); ctx.lineTo(Math.cos(b.angle)*35, -10+Math.sin(b.angle)*35); ctx.stroke();
         }
         ctx.restore();
       });
-
-      if (player.isCharging && turn === 'PLAYER') {
-        ctx.fillStyle = '#ffbe0b'; ctx.fillRect(player.x - 25, player.y - 45, player.power / 2, 6);
-      }
-
-      if (bullet) {
-        ctx.fillStyle = bullet.color; ctx.beginPath(); ctx.arc(bullet.x, bullet.y, bullet.radius, 0, Math.PI * 2); ctx.fill();
-      }
+      if (player.isCharging && turn === 'PLAYER') { ctx.fillStyle = '#ffbe0b'; ctx.fillRect(player.x-25, player.y-45, player.power/2, 6); ctx.strokeStyle = '#fff'; ctx.strokeRect(player.x-25, player.y-45, 50, 6); }
+      if (bullet) { ctx.fillStyle = bullet.color; ctx.beginPath(); ctx.arc(bullet.x, bullet.y, bullet.radius, 0, Math.PI * 2); ctx.fill(); }
     }
-
     function loop() { update(); draw(); requestAnimationFrame(loop); }
     loop();
   </script>

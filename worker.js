@@ -360,14 +360,22 @@ export default {
         loop();
       `;
 
-      // 2. ДИНАМІЧНА ОБФУСКАЦІЯ НА ЛЬОТУ (Base64 Encode)
-      const encodedScript = btoa(unescape(encodeURIComponent(rawGameScript)));
+      // 2. БЕЗПЕЧНА ДИНАМІЧНА ОБФУСКАЦІЯ (Unicode / Кирилиця)
+      const uint8Array = new TextEncoder().encode(rawGameScript);
+      let binaryStr = '';
+      for (let i = 0; i < uint8Array.length; i++) {
+        binaryStr += String.fromCharCode(uint8Array[i]);
+      }
+      const encodedScript = btoa(binaryStr);
 
-      // 3. СТВОРЕННЯ ЗАПЛУТАНОГО LOADER'А ДЛЯ БРАУЗЕРА
+      // 3. LOADER З ДЕКОДУВАННЯМ UTF-8
       const obfuscatedLoader = `
         (function(_0x1a2b,_0x3c4d){
           var _0x5e6f = function(_0x7a8b){
-            return decodeURIComponent(escape(atob(_0x7a8b)));
+            var bin = atob(_0x7a8b);
+            var bytes = new Uint8Array(bin.length);
+            for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+            return new TextDecoder().decode(bytes);
           };
           eval(_0x5e6f(_0x3c4d));
         })(window, "${encodedScript}");

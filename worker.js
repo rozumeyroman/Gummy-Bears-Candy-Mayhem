@@ -15,6 +15,19 @@ export default {
       }).trim();
     }
 
+    // --- API: Отримати Топ-10 лідерів (для динамічного оновлення) ---
+    if (url.pathname === "/api/leaderboard" && request.method === "GET") {
+      try {
+        const rawData = await env.LEADERBOARD.get("top_scores");
+        const scores = rawData ? JSON.parse(rawData) : [];
+        return new Response(JSON.stringify(scores), {
+          headers: { "Content-Type": "application/json" }
+        });
+      } catch (err) {
+        return new Response(JSON.stringify([]), { headers: { "Content-Type": "application/json" } });
+      }
+    }
+
     // --- СТАРТ НОВОЇ СЕСІЇ ГРИ ---
     if (url.pathname === "/api/start-session" && request.method === "POST") {
       try {
@@ -57,32 +70,32 @@ export default {
           session.playerParts = Math.max(0, session.playerParts - 1);
           session.score = Math.max(0, session.score - 10);
         } else if (action === "HIT_ENEMY") {
-          const validatedDamage = Math.min(3, Math.max(1, Number(damageDealt) || 1));
+          const validatedDamage = Math.min(10, Math.max(1, Number(damageDealt) || 1));
           session.enemyParts = Math.max(0, session.enemyParts - validatedDamage);
           session.score += validatedDamage * 60;
         } else if (action === "WIN") {
-          if (session.enemyParts <= 0 && session.playerParts > 0) {
-            session.score += session.playerParts * 50;
+          // Примусово закриваємо залишки ворога при перемозі
+          session.enemyParts = 0;
+          session.score += session.playerParts * 50;
 
-            const rawData = await env.LEADERBOARD.get("top_scores");
-            let scores = rawData ? JSON.parse(rawData) : [];
+          const rawData = await env.LEADERBOARD.get("top_scores");
+          let scores = rawData ? JSON.parse(rawData) : [];
 
-            scores.push({
-              username: session.username,
-              score: session.score,
-              date: new Date().toLocaleDateString()
-            });
+          scores.push({
+            username: session.username,
+            score: session.score,
+            date: new Date().toLocaleDateString()
+          });
 
-            scores.sort((a, b) => b.score - a.score);
-            scores = scores.slice(0, 10);
+          scores.sort((a, b) => b.score - a.score);
+          scores = scores.slice(0, 10);
 
-            await env.LEADERBOARD.put("top_scores", JSON.stringify(scores));
-            await env.LEADERBOARD.delete("session:" + sessionId);
+          await env.LEADERBOARD.put("top_scores", JSON.stringify(scores));
+          await env.LEADERBOARD.delete("session:" + sessionId);
 
-            return new Response(JSON.stringify({ status: "SAVED", finalScore: session.score }), {
-              headers: { "Content-Type": "application/json" }
-            });
-          }
+          return new Response(JSON.stringify({ status: "SAVED", finalScore: session.score }), {
+            headers: { "Content-Type": "application/json" }
+          });
         }
 
         await env.LEADERBOARD.put("session:" + sessionId, JSON.stringify(session), { expirationTtl: 1800 });
@@ -146,7 +159,6 @@ export default {
     <div class="modal-box">
       <h2>🍬 Ласкаво просимо!</h2>
       <p style="font-size: 14px; color: #ddd;">Введіть свій юзернейм для гри:</p>
-      <!-- Вимкнено автозаповнення паролів/iCloud -->
       <input type="text" id="usernameInput" placeholder="Гравець 1" maxlength="12" autocomplete="off" name="no-autofill" data-1p-ignore>
       <button onclick="startGame()">Розпочати гру</button>
     </div>
@@ -169,7 +181,7 @@ export default {
 
     <div class="leaderboard-card">
       <h3>🏆 ТОП-10 ЛІДЕРІВ</h3>
-      <ol class="leaderboard-list">
+      <ol id="leaderboardList" class="leaderboard-list">
         ${leaderboardHtml}
       </ol>
     </div>
@@ -179,6 +191,29 @@ export default {
     window.sessionId = null;
     window.score = 0;
     window.currentUsername = "Гравець";
+
+    function safeHTML(str) {
+      const div = document.createElement('div');
+      div.textContent = str;
+      return div.innerHTML;
+    }
+
+    async function fetchLeaderboard() {
+      try {
+        const res = await fetch('/api/leaderboard');
+        const data = await res.json();
+        const list = document.getElementById('leaderboardList');
+        if (!list) return;
+        list.innerHTML = '';
+        if (data.length === 0) {
+          list.innerHTML = '<li><i>Поки немає рекордів</i></li>';
+          return;
+        }
+        data.forEach((item, idx) => {
+          list.innerHTML += \`<li><span>\${idx + 1}. \${safeHTML(item.username)}</span> <b>\${item.score}</b></li>\`;
+        });
+      } catch(e){}
+    }
 
     window.addEventListener('DOMContentLoaded', () => {
       const savedName = localStorage.getItem('gummy_username');
@@ -216,9 +251,7 @@ export default {
         });
         const data = await res.json();
         window.sessionId = data.sessionId;
-      } catch(e) {
-        console.error('Помилка відкриття сесії');
-      }
+      } catch(e) {}
     }
 
     const canvas = document.getElementById('gameCanvas');
@@ -300,14 +333,18 @@ export default {
       player.partsCount--;
       document.getElementById('p1-parts').innerText = player.partsCount + '/10';
 
-      const res = await fetch('/api/game-action', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sessionId: window.sessionId, action: 'SHOOT' })
-      });
-      const data = await res.json();
-      window.score = data.score;
-      document.getElementById('scoreDisplay').innerText = window.score;
+      try {
+        const res = await fetch('/api/game-action', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sessionId: window.sessionId, action: 'SHOOT' })
+        });
+        const data = await res.json();
+        if (typeof data.score === 'number') {
+          window.score = data.score;
+          document.getElementById('scoreDisplay').innerText = window.score;
+        }
+      } catch(e){}
 
       const lastPart = BEAR_PARTS[player.partsCount];
       bullet = {
@@ -419,14 +456,18 @@ export default {
         target.partsCount -= finalPartsToRemove;
         
         if (owner === 'PLAYER' && target === enemy) {
-          const res = await fetch('/api/game-action', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ sessionId: window.sessionId, action: 'HIT_ENEMY', damageDealt: finalPartsToRemove })
-          });
-          const data = await res.json();
-          window.score = data.score;
-          document.getElementById('scoreDisplay').innerText = window.score;
+          try {
+            const res = await fetch('/api/game-action', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ sessionId: window.sessionId, action: 'HIT_ENEMY', damageDealt: finalPartsToRemove })
+            });
+            const data = await res.json();
+            if (typeof data.score === 'number') {
+              window.score = data.score;
+              document.getElementById('scoreDisplay').innerText = window.score;
+            }
+          } catch(e){}
         }
         document.getElementById(elementId).innerText = target.partsCount + '/10';
       }
@@ -434,13 +475,18 @@ export default {
 
     async function handleEndGame() {
       if (enemy.partsCount <= 0 && player.partsCount > 0) {
-        const res = await fetch('/api/game-action', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ sessionId: window.sessionId, action: 'WIN' })
-        });
-        const data = await res.json();
-        alert('🎉 ПЕРЕМОГА! Підсумковий рахунок: ' + data.finalScore);
+        try {
+          const res = await fetch('/api/game-action', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ sessionId: window.sessionId, action: 'WIN' })
+          });
+          const data = await res.json();
+          alert('🎉 ПЕРЕМОГА! Підсумковий рахунок: ' + (data.finalScore ?? window.score));
+          await fetchLeaderboard();
+        } catch(e) {
+          alert('🎉 ПЕРЕМОГА!');
+        }
       } else { 
         alert('😱 Поразка!'); 
       }
@@ -458,7 +504,6 @@ export default {
       player.x = 80 + Math.random()*60; 
       enemy.x = 600 + Math.random()*80;
 
-      // Автоматичний старт нової сесії без показу модального вікна
       await initSession(window.currentUsername);
     }
 

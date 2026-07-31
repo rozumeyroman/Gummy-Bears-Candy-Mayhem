@@ -6,7 +6,7 @@ export default {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Gummy Bears: Candy Worms</title>
+  <title>Gummy Bears: Smart AI Edition</title>
   <style>
     body { font-family: 'Segoe UI', system-ui, sans-serif; background: #2b1055; color: white; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; margin: 0; }
     h1 { margin-bottom: 2px; color: #ff75a0; text-shadow: 0 0 10px rgba(255,117,160,0.5); }
@@ -18,19 +18,21 @@ export default {
     .bear-green { color: #52b788; }
     .bear-red { color: #ff4d6d; }
     .turn-indicator { margin-top: 5px; font-weight: bold; font-size: 16px; color: #ffbe0b; height: 24px; }
+    .wind-indicator { margin-top: 4px; font-size: 14px; color: #8d99ae; }
   </style>
 </head>
 <body>
-  <h1>🍬 Gummy Bears: Candy Mayhem 🍬</h1>
-  <p>Відривай шматки свого желейного тіла для пострілу!</p>
+  <h1>🍬 Gummy Bears: Smart AI 🍬</h1>
+  <p>Ворожий ведмедик тепер має розрахунок траєкторії та пам'ять пристрілки!</p>
 
   <div class="status-bar">
     <div class="bear-green">🟩 Ваш Ведмедик: <span id="p1-parts">10/10</span> шматків</div>
-    <div class="bear-red">🟥 Ворог: <span id="p2-parts">10/10</span> шматків</div>
+    <div class="bear-red">🟥 Ворог (Smart AI): <span id="p2-parts">10/10</span> шматків</div>
   </div>
 
   <canvas id="gameCanvas" width="800" height="450"></canvas>
   <div id="turn-text" class="turn-indicator">Хід: Ваш хід (🟩 Зелений)</div>
+  <div id="wind-text" class="wind-indicator">Вітер: 0</div>
 
   <div class="controls">
     <span class="highlight">A / D</span> — Рух | 
@@ -42,7 +44,6 @@ export default {
     const canvas = document.getElementById('gameCanvas');
     const ctx = canvas.getContext('2d');
 
-    // 10 Анатомічних сегментів желейного ведмедика
     const BEAR_PARTS = [
       { name: 'Лiве вушко', dx: -8, dy: -20, r: 5 },
       { name: 'Праве вушко', dx: 8, dy: -20, r: 5 },
@@ -56,7 +57,6 @@ export default {
       { name: 'Голова', dx: 0, dy: -15, r: 8 }
     ];
 
-    // Ландшафт
     const terrain = new Array(canvas.width);
     function generateTerrain() {
       let height = 300;
@@ -67,10 +67,16 @@ export default {
     }
     generateTerrain();
 
-    // Стан ходу: 'PLAYER', 'ENEMY', 'WAITING'
+    let wind = (Math.random() * 0.4 - 0.2); // Початковий вітер
+    updateWindUI();
+
+    function updateWindUI() {
+      const windText = wind > 0 ? '➡️ Східний ' + Math.abs(wind * 10).toFixed(1) : '⬅️ Західний ' + Math.abs(wind * 10).toFixed(1);
+      document.getElementById('wind-text').innerText = 'Вітер: ' + windText;
+    }
+
     let turn = 'PLAYER';
 
-    // Гравці
     const player = {
       x: 120, y: 0, radius: 10,
       partsCount: 10,
@@ -82,7 +88,8 @@ export default {
       x: 680, y: 0, radius: 10,
       partsCount: 10,
       color: '#ff4d6d', highlight: '#ff758f',
-      angle: -Math.PI * 3 / 4, power: 0
+      angle: -Math.PI * 3 / 4, power: 0,
+      lastShotError: 0 // Пам'ять для корекції пристрілки
     };
 
     let bullet = null;
@@ -131,25 +138,51 @@ export default {
       }
     }
 
-    // AI ШІ-Ворога
+    // 🤖 Розумний AI з симуляцією траєкторії та коригуванням похибки
     function enemyTurn() {
       if (enemy.partsCount <= 0) return;
 
-      document.getElementById('turn-text').innerText = 'Хід: Ворог думає... (🟥 Червоний)';
+      document.getElementById('turn-text').innerText = 'Хід: Ворог оцінює вітер та дистанцію...';
 
       setTimeout(() => {
-        // Розрахунок кута та сили для влучання у гравця з урахуванням відстані
-        const dx = player.x - enemy.x;
-        const dy = player.y - enemy.y;
-        const distance = Math.abs(dx);
+        // AI розраховує найкращий кут та силу за допомогою віртуальної симуляції
+        let bestPower = 50;
+        let bestAngle = -Math.PI * 0.72;
+        let minDistanceToPlayer = 9999;
 
-        enemy.angle = -Math.PI * 0.70 + (Math.random() * 0.1 - 0.05);
-        
-        // Розрахунок прикладного рівня сили + випадковий шум розкиду
-        const requiredPower = Math.min(100, Math.max(30, (distance / 5.5) + (Math.random() * 12 - 6)));
-        enemy.power = requiredPower;
+        // Тестуємо кілька варіантів кутів і сили в "умі" AI
+        for (let a = -Math.PI * 0.85; a <= -Math.PI * 0.55; a += 0.05) {
+          for (let p = 20; p <= 100; p += 5) {
+            let simX = enemy.x;
+            let simY = enemy.y - 10;
+            let simVx = Math.cos(a) * (p / 4.5);
+            let simVy = Math.sin(a) * (p / 4.5);
 
-        // Відриваємо шматок у ворога
+            // Швидка симуляція польоту
+            for (let step = 0; step < 120; step++) {
+              simX += simVx;
+              simY += simVy;
+              simVy += 0.18; // Гравітація
+              simVx += wind * 0.1; // Вплив вітру
+
+              const terY = terrain[Math.min(canvas.width - 1, Math.max(0, Math.floor(simX)))];
+              if (simY >= terY || simX <= 0 || simX >= canvas.width) {
+                const distToPlayer = Math.hypot(simX - player.x, simY - player.y);
+                if (distToPlayer < minDistanceToPlayer) {
+                  minDistanceToPlayer = distToPlayer;
+                  bestPower = p;
+                  bestAngle = a;
+                }
+                break;
+              }
+            }
+          }
+        }
+
+        // Застосовуємо корекцію з минулого ходу (пристрілка) + легкий людський шум
+        enemy.angle = bestAngle + (Math.random() * 0.04 - 0.02);
+        enemy.power = Math.min(100, Math.max(10, bestPower + enemy.lastShotError + (Math.random() * 4 - 2)));
+
         enemy.partsCount--;
         document.getElementById('p2-parts').innerText = enemy.partsCount + '/10';
         const lastPart = BEAR_PARTS[enemy.partsCount];
@@ -171,14 +204,13 @@ export default {
             resetGame();
           }, 600);
         }
-      }, 1200);
+      }, 1000);
     }
 
     function update() {
       updateY(player);
       updateY(enemy);
 
-      // Керування тільки під час ходу гравця
       if (turn === 'PLAYER' && player.partsCount > 0) {
         if (keys['KeyA'] && player.x > 30) player.x -= 1.5;
         if (keys['KeyD'] && player.x < canvas.width - 30) player.x += 1.5;
@@ -191,11 +223,11 @@ export default {
         }
       }
 
-      // Політ снаряда
       if (bullet) {
         bullet.x += bullet.vx;
         bullet.y += bullet.vy;
-        bullet.vy += 0.18; // Гравітація
+        bullet.vy += 0.18; 
+        bullet.vx += wind * 0.1; // Вітер впливає на кулю в польоті
 
         const terrainY = terrain[Math.floor(bullet.x)];
         if (bullet.x < 0 || bullet.x >= canvas.width || bullet.y >= terrainY) {
@@ -206,7 +238,6 @@ export default {
     }
 
     function explode(ex, ey, owner) {
-      // Руйнування землі
       const blastRadius = 28;
       for (let x = Math.max(0, Math.floor(ex - blastRadius)); x < Math.min(canvas.width, Math.floor(ex + blastRadius)); x++) {
         const dist = Math.abs(x - ex);
@@ -216,11 +247,23 @@ export default {
         }
       }
 
-      // Перевірка влучання у гравців
-      checkHit(player, 'p1-parts', ex, ey, blastRadius, 'Вам завдано ураження!');
-      checkHit(enemy, 'p2-parts', ex, ey, blastRadius, 'Ворога поранено!');
+      // Запом'ятовуємо недоліт чи переліт для AI
+      if (owner === 'ENEMY') {
+        if (ex < player.x) {
+          enemy.lastShotError = 3; // Недоліт — наступного разу стріляти трохи сильніше
+        } else if (ex > player.x) {
+          enemy.lastShotError = -3; // Переліт — трохи слабше
+        }
+      }
 
-      // Передача ходу
+      checkHit(player, 'p1-parts', ex, ey, blastRadius);
+      checkHit(enemy, 'p2-parts', ex, ey, blastRadius);
+
+      // Зміна вітру між ходами
+      wind += (Math.random() * 0.1 - 0.05);
+      wind = Math.max(-0.4, Math.min(0.4, wind));
+      updateWindUI();
+
       if (owner === 'PLAYER') {
         turn = 'ENEMY';
         enemyTurn();
@@ -253,6 +296,7 @@ export default {
     function resetGame() {
       player.partsCount = 10;
       enemy.partsCount = 10;
+      enemy.lastShotError = 0;
       document.getElementById('p1-parts').innerText = '10/10';
       document.getElementById('p2-parts').innerText = '10/10';
       turn = 'PLAYER';
@@ -304,7 +348,6 @@ export default {
     function draw() {
       ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-      // Ландшафт
       ctx.fillStyle = '#ffb5a7';
       ctx.beginPath();
       ctx.moveTo(0, canvas.height);

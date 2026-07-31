@@ -26,7 +26,6 @@ export default {
         const rawData = await env.LEADERBOARD.get("top_scores");
         let scores = rawData ? JSON.parse(rawData) : [];
 
-        // Додаємо новий результат і залишаємо ТОП-10
         scores.push({ username, score, date: new Date().toLocaleDateString() });
         scores.sort((a, b) => b.score - a.score);
         scores = scores.slice(0, 10);
@@ -156,11 +155,31 @@ export default {
     ];
 
     const terrain = new Array(canvas.width);
+
+    // 🏔️ ВАРІАТИВНА ГЕНЕРАЦІЯ НОВОГО ЛАНДШАФТУ ЩОРАЗУ
     function generateTerrain() {
-      let height = 280;
+      const type = Math.floor(Math.random() * 4); // 4 унікальних типи карти
+      const baseHeight = 220 + Math.random() * 80;
+      const freq1 = 0.008 + Math.random() * 0.01;
+      const freq2 = 0.02 + Math.random() * 0.02;
+
       for (let x = 0; x < canvas.width; x++) {
-        height += Math.sin(x * 0.012) * 1.8 + (Math.random() * 1.5 - 0.75);
-        terrain[x] = Math.max(160, Math.min(350, height));
+        let h = baseHeight;
+        if (type === 0) {
+          // Пагорби
+          h += Math.sin(x * freq1) * 60 + Math.cos(x * freq2) * 20;
+        } else if (type === 1) {
+          // Каньйон / Улоговина по центру
+          const centerDist = Math.abs(x - canvas.width / 2);
+          h += Math.sin(x * freq1) * 40 + (centerDist < 150 ? 50 : -20);
+        } else if (type === 2) {
+          // Гострі скелі
+          h += Math.sin(x * freq1) * 50 + Math.sin(x * 0.05) * 15;
+        } else {
+          // Каскадні хвилі
+          h += Math.cos(x * freq1) * 70 + Math.sin(x * freq2) * 25;
+        }
+        terrain[x] = Math.max(120, Math.min(380, h));
       }
     }
     generateTerrain();
@@ -174,12 +193,41 @@ export default {
 
     let turn = 'PLAYER';
 
-    const player = { x: 100, y: 0, radius: 10, partsCount: 10, color: '#52b788', highlight: '#74c69d', angle: -Math.PI / 4, power: 0, isCharging: false };
-    const enemy = { x: 650, y: 0, radius: 10, partsCount: 10, color: '#ff4d6d', highlight: '#ff758f', angle: -Math.PI * 0.75, power: 0, lastError: 0 };
+    const player = { x: 100, y: 0, radius: 10, partsCount: 10, color: '#52b788', highlight: '#74c69d', angle: -Math.PI / 4, power: 0, isCharging: false, vx: 0, vy: 0 };
+    const enemy = { x: 650, y: 0, radius: 10, partsCount: 10, color: '#ff4d6d', highlight: '#ff758f', angle: -Math.PI * 0.75, power: 0, lastError: 0, vx: 0, vy: 0 };
     let bullet = null;
     const keys = {};
 
-    function updateY(e) { e.y = terrain[Math.floor(e.x)] - 5; }
+    function updateY(e) {
+      // Перевірка чи знаходиться на суші
+      const xIdx = Math.floor(e.x);
+      if (xIdx >= 0 && xIdx < canvas.width) {
+        e.y = terrain[xIdx] - 5;
+      }
+    }
+
+    // ☠️ ПЕРЕВІРКА ВИПАДІННЯ ЗА МЕЖІ КАРТИ (СМЕРТЬ ВІД ПАДІННЯ В ПРІРВУ)
+    function checkOutOfBounds(b, name) {
+      if (b.partsCount <= 0) return false;
+      
+      const xIdx = Math.floor(b.x);
+      const isOffSides = b.x < 0 || b.x >= canvas.width;
+      const isDrowned = xIdx >= 0 && xIdx < canvas.width && b.y > terrain[xIdx] + 30;
+      const isFellBottom = b.y > canvas.height;
+
+      if (isOffSides || isDrowned || isFellBottom) {
+        b.partsCount = 0;
+        if (b === player) {
+          document.getElementById('p1-parts').innerText = '0/10';
+          alert('😱 ' + name + ' випав за межі карти та загинув!');
+        } else {
+          document.getElementById('p2-parts').innerText = '0/10';
+          alert('🎉 ' + name + ' випав у прірву за межі карти!');
+        }
+        return true;
+      }
+      return false;
+    }
 
     window.addEventListener('keydown', e => keys[e.code] = true);
     window.addEventListener('keyup', e => {
@@ -246,9 +294,10 @@ export default {
 
     function update() {
       updateY(player); updateY(enemy);
+
       if (turn === 'PLAYER' && player.partsCount > 0) {
-        if (keys['KeyA'] && player.x > 30) player.x -= 1.5;
-        if (keys['KeyD'] && player.x < canvas.width - 30) player.x += 1.5;
+        if (keys['KeyA'] && player.x > 5) player.x -= 1.8;
+        if (keys['KeyD'] && player.x < canvas.width - 5) player.x += 1.8;
         if (keys['KeyW'] && player.angle > -Math.PI + 0.1) player.angle -= 0.03;
         if (keys['KeyS'] && player.angle < -0.1) player.angle += 0.03;
         if (keys['Space'] && !bullet) {
@@ -257,12 +306,20 @@ export default {
         }
       }
 
+      // Перевірка падіння гравців за межі карти
+      if (checkOutOfBounds(player, username) || checkOutOfBounds(enemy, 'Ворожий ведмедик')) {
+        handleEndGame();
+        return;
+      }
+
       if (bullet) {
         bullet.x += bullet.vx; bullet.y += bullet.vy;
         bullet.vy += 0.18; bullet.vx += wind * 0.1;
 
-        const terrainY = terrain[Math.floor(bullet.x)];
-        if (bullet.x < 0 || bullet.x >= canvas.width || bullet.y >= terrainY) {
+        const xIdx = Math.floor(bullet.x);
+        const terrainY = (xIdx >= 0 && xIdx < canvas.width) ? terrain[xIdx] : 9999;
+
+        if (bullet.x < -50 || bullet.x >= canvas.width + 50 || bullet.y >= terrainY) {
           explode(bullet.x, bullet.y, bullet.owner);
           bullet = null;
         }
@@ -271,6 +328,19 @@ export default {
 
     function explode(ex, ey, owner) {
       const blastRadius = 26;
+
+      // Відкидання гравців вибуховою хвилею (Knockback)
+      [player, enemy].forEach(b => {
+        const dist = Math.hypot(b.x - ex, b.y - ey);
+        if (dist < blastRadius + 20) {
+          const angle = Math.atan2(b.y - ey, b.x - ex);
+          const force = (1 - dist / (blastRadius + 20)) * 30;
+          b.x += Math.cos(angle) * force;
+          b.y += Math.sin(angle) * force;
+        }
+      });
+
+      // Руйнування землі
       for (let x = Math.max(0, Math.floor(ex - blastRadius)); x < Math.min(canvas.width, Math.floor(ex + blastRadius)); x++) {
         const dist = Math.abs(x - ex);
         const depth = Math.sqrt(blastRadius * blastRadius - dist * dist);
@@ -300,21 +370,25 @@ export default {
       wind = Math.max(-0.4, Math.min(0.4, wind));
       updateWindDisplay();
 
-      if (enemy.partsCount <= 0 || player.partsCount <= 0) {
-        if (enemy.partsCount <= 0) {
-          score += player.partsCount * 50;
-          document.getElementById('scoreDisplay').innerText = score;
-          alert('🎉 ПЕРЕМОГА! Ваш підсумковий рахунок: ' + score);
-          saveScore(score);
-        } else {
-          alert('😱 Поразка! Рахунок: ' + score);
-        }
-        resetGame();
+      if (enemy.partsCount <= 0 || player.partsCount <= 0 || checkOutOfBounds(player, username) || checkOutOfBounds(enemy, 'Ворожий ведмедик')) {
+        handleEndGame();
         return;
       }
 
       if (owner === 'PLAYER') { turn = 'ENEMY'; enemyTurn(); }
       else { turn = 'PLAYER'; document.getElementById('turn-info').innerText = 'Хід: Ваш хід (🟩 Зелений)'; }
+    }
+
+    function handleEndGame() {
+      if (enemy.partsCount <= 0 && player.partsCount > 0) {
+        score += player.partsCount * 50;
+        document.getElementById('scoreDisplay').innerText = score;
+        alert('🎉 ПЕРЕМОГА! Ваш підсумковий рахунок: ' + score);
+        saveScore(score);
+      } else {
+        alert('😱 Поразка! Рахунок: ' + score);
+      }
+      resetGame();
     }
 
     function resetGame() {
@@ -324,7 +398,10 @@ export default {
       document.getElementById('p2-parts').innerText = '10/10';
       turn = 'PLAYER';
       document.getElementById('turn-info').innerText = 'Хід: Ваш хід (🟩 Зелений)';
-      generateTerrain(); player.x = 100; enemy.x = 650;
+      
+      generateTerrain(); // Нова карта щоразу при скиданні
+      player.x = 80 + Math.random() * 60; 
+      enemy.x = 600 + Math.random() * 80;
     }
 
     function draw() {

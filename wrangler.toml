@@ -1,6 +1,5 @@
-name = "game"
-main = "worker.js"
-compatibility_date = "2024-09-23"
-
-[site]
-# Вимикаємо пошук статичних папок, оскільки HTML віддається прямо з коду Worker
+{
+  "name": "gummy-bears-candy-mayhem",
+  "main": "worker.js",
+  "compatibility_date": "2026-07-31"
+}

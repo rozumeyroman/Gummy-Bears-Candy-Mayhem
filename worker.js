@@ -76,8 +76,8 @@ export default {
 
       // 1. ВІДКРИТИЙ КЛІЄНТСЬКИЙ КОД ГРИ
       const rawGameScript = `
-        let username = "Гравець";
-        let score = 0;
+        window.username = "Гравець";
+        window.score = 0;
 
         function safeHTML(str) {
           const div = document.createElement('div');
@@ -85,13 +85,13 @@ export default {
           return div.innerHTML;
         }
 
-        function startGame() {
+        window.startGame = function() {
           const val = document.getElementById('usernameInput').value.trim();
-          if (val) username = val;
-          document.getElementById('displayName').innerText = username;
+          if (val) window.username = val;
+          document.getElementById('displayName').innerText = window.username;
           document.getElementById('nameModal').style.display = 'none';
           loadLeaderboard();
-        }
+        };
 
         async function loadLeaderboard() {
           try {
@@ -99,7 +99,7 @@ export default {
             const data = await res.json();
             const list = document.getElementById('leaderboardList');
             list.innerHTML = '';
-            if (data.length === 0) {
+            if (!data || data.length === 0) {
               list.innerHTML = '<li><i>Поки немає рекордів</i></li>';
               return;
             }
@@ -111,12 +111,12 @@ export default {
 
         async function saveScore(finalScore) {
           try {
-            const secretCheck = btoa(username + finalScore + "candy_secret_key").slice(0, 16);
+            const secretCheck = btoa(window.username + finalScore + "candy_secret_key").slice(0, 16);
             await fetch('/api/leaderboard', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ 
-                username: username, 
+                username: window.username, 
                 score: finalScore,
                 secretCheck: secretCheck
               })
@@ -201,8 +201,8 @@ export default {
           player.isCharging = false;
           if (player.partsCount <= 0) return;
           player.partsCount--;
-          score = Math.max(0, score - 10);
-          document.getElementById('scoreDisplay').innerText = score;
+          window.score = Math.max(0, window.score - 10);
+          document.getElementById('scoreDisplay').innerText = window.score;
           document.getElementById('p1-parts').innerText = player.partsCount + '/10';
           const lastPart = BEAR_PARTS[player.partsCount];
           bullet = {
@@ -256,7 +256,7 @@ export default {
             if (keys['KeyS'] && player.angle < -0.1) player.angle += 0.03;
             if (keys['Space'] && !bullet) { player.isCharging = true; if (player.power < 100) player.power += 2.5; }
           }
-          if (checkOutOfBounds(player, username) || checkOutOfBounds(enemy, 'Ворожий ведмедик')) { handleEndGame(); return; }
+          if (checkOutOfBounds(player, window.username) || checkOutOfBounds(enemy, 'Ворожий ведмедик')) { handleEndGame(); return; }
           if (bullet) {
             bullet.x += bullet.vx; bullet.y += bullet.vy; bullet.vy += 0.18; bullet.vx += wind * 0.1;
             const xIdx = Math.floor(bullet.x);
@@ -285,7 +285,7 @@ export default {
           checkSegmentHits(enemy, 'p2-parts', ex, ey, blastRadius, owner);
 
           wind += (Math.random() * 0.1 - 0.05); wind = Math.max(-0.4, Math.min(0.4, wind)); updateWindDisplay();
-          if (enemy.partsCount <= 0 || player.partsCount <= 0 || checkOutOfBounds(player, username) || checkOutOfBounds(enemy, 'Ворожий ведмедик')) { handleEndGame(); return; }
+          if (enemy.partsCount <= 0 || player.partsCount <= 0 || checkOutOfBounds(player, window.username) || checkOutOfBounds(enemy, 'Ворожий ведмедик')) { handleEndGame(); return; }
           if (owner === 'PLAYER') { turn = 'ENEMY'; enemyTurn(); }
           else { turn = 'PLAYER'; document.getElementById('turn-info').innerText = 'Хід: Ваш хід (🟩 Зелений)'; }
         }
@@ -314,9 +314,9 @@ export default {
             target.partsCount -= finalPartsToRemove;
             
             if (owner === 'PLAYER' && target === enemy) {
-              score += finalPartsToRemove * 60;
-              if (directHit) score += 50;
-              document.getElementById('scoreDisplay').innerText = score;
+              window.score += finalPartsToRemove * 60;
+              if (directHit) window.score += 50;
+              document.getElementById('scoreDisplay').innerText = window.score;
             }
             document.getElementById(elementId).innerText = target.partsCount + '/10';
           }
@@ -324,14 +324,14 @@ export default {
 
         function handleEndGame() {
           if (enemy.partsCount <= 0 && player.partsCount > 0) {
-            score += player.partsCount * 50; document.getElementById('scoreDisplay').innerText = score;
-            alert('🎉 ПЕРЕМОГА! Рахунок: ' + score); saveScore(score);
-          } else { alert('😱 Поразка! Рахунок: ' + score); }
+            window.score += player.partsCount * 50; document.getElementById('scoreDisplay').innerText = window.score;
+            alert('🎉 ПЕРЕМОГА! Рахунок: ' + window.score); saveScore(window.score);
+          } else { alert('😱 Поразка! Рахунок: ' + window.score); }
           resetGame();
         }
 
         function resetGame() {
-          player.partsCount = 10; enemy.partsCount = 10; score = 0;
+          player.partsCount = 10; enemy.partsCount = 10; window.score = 0;
           document.getElementById('scoreDisplay').innerText = '0'; document.getElementById('p1-parts').innerText = '10/10'; document.getElementById('p2-parts').innerText = '10/10';
           turn = 'PLAYER'; document.getElementById('turn-info').innerText = 'Хід: Ваш хід (🟩 Зелений)'; generateTerrain(); player.x = 80 + Math.random()*60; enemy.x = 600 + Math.random()*80;
         }
@@ -360,7 +360,7 @@ export default {
         loop();
       `;
 
-      // 2. БЕЗПЕЧНА ДИНАМІЧНА ОБФУСКАЦІЯ (Unicode / Кирилиця)
+      // 2. БЕЗПЕЧНА ДИНАМІЧНА ОБФУСКАЦІЯ (Base64 Encoding через UTF-8 TextEncoder)
       const uint8Array = new TextEncoder().encode(rawGameScript);
       let binaryStr = '';
       for (let i = 0; i < uint8Array.length; i++) {
@@ -368,17 +368,18 @@ export default {
       }
       const encodedScript = btoa(binaryStr);
 
-      // 3. LOADER З ДЕКОДУВАННЯМ UTF-8
+      // 3. СТВОРЕННЯ ДИНАМІЧНОГО ЕЛЕМЕНТА SCRIPT У BROWSER DOM
       const obfuscatedLoader = `
-        (function(_0x1a2b,_0x3c4d){
-          var _0x5e6f = function(_0x7a8b){
-            var bin = atob(_0x7a8b);
-            var bytes = new Uint8Array(bin.length);
-            for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-            return new TextDecoder().decode(bytes);
-          };
-          eval(_0x5e6f(_0x3c4d));
-        })(window, "${encodedScript}");
+        (function(){
+          var bin = atob("${encodedScript}");
+          var bytes = new Uint8Array(bin.length);
+          for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+          var decodedScript = new TextDecoder().decode(bytes);
+          
+          var scriptEl = document.createElement('script');
+          scriptEl.textContent = decodedScript;
+          document.head.appendChild(scriptEl);
+        })();
       `;
 
       const html = `<!DOCTYPE html>

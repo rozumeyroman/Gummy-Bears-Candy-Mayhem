@@ -48,6 +48,19 @@ function renderChangelogHtml(sanitize) {
   }).join("");
 }
 
+// --- ВНУТРІШНЄ СХОВИЩЕ КІМНАТ В ОПЕРАТИВНІЙ ПАМ'ЯТІ (RAM) ---
+const activeRooms = new Map();
+
+function cleanExpiredRooms() {
+  const now = Date.now();
+  const EXPIRATION_MS = 3600 * 1000;
+  for (const [id, room] of activeRooms.entries()) {
+    if (now - (room.createdAt || 0) > EXPIRATION_MS) {
+      activeRooms.delete(id);
+    }
+  }
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -138,7 +151,8 @@ export default {
           createdAt: Date.now()
         };
 
-        await env.LEADERBOARD.put("room:" + roomId, JSON.stringify(roomState), { expirationTtl: 3600 });
+        cleanExpiredRooms();
+        activeRooms.set(roomId, roomState);
 
         const clientState = JSON.parse(JSON.stringify(roomState));
         delete clientState.teamA.token;
@@ -156,13 +170,12 @@ export default {
     if (url.pathname === "/api/join-room" && request.method === "POST") {
       try {
         const { roomId, username, rpsChoice } = await request.json();
-        const rawRoom = await env.LEADERBOARD.get("room:" + roomId);
+        const roomState = activeRooms.get(roomId);
 
-        if (!rawRoom) {
+        if (!roomState) {
           return new Response(JSON.stringify({ error: "Кімнату не знайдено" }), { status: 404 });
         }
 
-        let roomState = JSON.parse(rawRoom);
         if (roomState.status !== "WAITING") {
           return new Response(JSON.stringify({ error: "Кімната вже заповнена" }), { status: 400 });
         }
@@ -177,7 +190,7 @@ export default {
         roomState.activeTeam = rps.winner;
         roomState.rpsResult = { isTie: rps.isTie, winner: rps.winner };
 
-        await env.LEADERBOARD.put("room:" + roomId, JSON.stringify(roomState), { expirationTtl: 3600 });
+        activeRooms.set(roomId, roomState);
 
         const clientState = JSON.parse(JSON.stringify(roomState));
         delete clientState.teamA.token;
@@ -195,14 +208,14 @@ export default {
     if (url.pathname === "/api/room-state" && request.method === "GET") {
       try {
         const roomId = url.searchParams.get("roomId");
-        const rawRoom = await env.LEADERBOARD.get("room:" + roomId);
-        if (!rawRoom) {
+        const room = activeRooms.get(roomId);
+        if (!room) {
           return new Response(JSON.stringify({ error: "Кімнату не знайдено" }), { status: 404 });
         }
-        let room = JSON.parse(rawRoom);
-        delete room.teamA.token;
-        delete room.teamB.token;
-        return new Response(JSON.stringify(room), { headers: { "Content-Type": "application/json" } });
+        const clientState = JSON.parse(JSON.stringify(room));
+        delete clientState.teamA.token;
+        delete clientState.teamB.token;
+        return new Response(JSON.stringify(clientState), { headers: { "Content-Type": "application/json" } });
       } catch (err) {
         return new Response(JSON.stringify({ error: err.message }), { status: 500 });
       }
@@ -212,13 +225,11 @@ export default {
     if (url.pathname === "/api/game-action" && request.method === "POST") {
       try {
         const { roomId, playerToken, action, payload } = await request.json();
-        const rawRoom = await env.LEADERBOARD.get("room:" + roomId);
+        const room = activeRooms.get(roomId);
 
-        if (!rawRoom) {
+        if (!room) {
           return new Response(JSON.stringify({ error: "Недійсна сесія" }), { status: 403 });
         }
-
-        let room = JSON.parse(rawRoom);
 
         const isTeamA = playerToken === room.teamA.token;
         const isTeamB = playerToken === room.teamB.token || (room.mode === "AI" && playerToken === "BOT_TOKEN");
@@ -280,7 +291,7 @@ export default {
           }
         }
 
-        await env.LEADERBOARD.put("room:" + roomId, JSON.stringify(room), { expirationTtl: 3600 });
+        activeRooms.set(roomId, room);
 
         const clientState = JSON.parse(JSON.stringify(room));
         delete clientState.teamA.token;

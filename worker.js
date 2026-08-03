@@ -403,6 +403,7 @@ export default {
 
     // Оновлена розмірність ландшафту (1200px)
     const terrain = new Array(canvas.width);
+    let wind = 0; // Оголошено ДО generateTerrain(), інакше — ReferenceError (TDZ) і скрипт падає повністю
     function generateTerrain(roomId) {
       const rand = seededRandom(hashString(roomId || "default-seed"));
       const type = Math.floor(rand() * 4);
@@ -452,7 +453,6 @@ export default {
       { id: 'B3', x: 1080, y: 0, partsCount: 10, color: '#800f2f', highlight: '#c9184a', angle: -Math.PI*0.75, power: 0, isCharging: false }
     ];
 
-    let wind = 0; // Встановлюється в generateTerrain(roomId) після старту гри
     let bullet = null;
     const keys = {};
 

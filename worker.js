@@ -1,3 +1,34 @@
+// --- ІСТОРІЯ ВЕРСІЙ ---
+// Відлік ведеться від 2.0. При кожній новій зміні коду ДОДАВАЙ новий запис
+// НА ПОЧАТОК цього масиву (найновіша версія — перша), не видаляючи попередні.
+const CHANGELOG = [
+  {
+    version: "2.0",
+    date: "2026-08-03",
+    changes: [
+      "Виправлено чергу ходів: раніше активний ведмедик не змінювався і стріляв, поки не гине; тепер хід коректно переходить по колу (1 → 2 → 3)",
+      "Виправлено розсинхрон карти в мультиплеєрі: рельєф і вітер генерувалися окремо Math.random() у кожного гравця; тепер вони детерміновано обчислюються з ID кімнати, тож обидва бачать однакову карту",
+      "Додано панель історії версій зліва від ігрового поля"
+    ]
+  }
+];
+
+function renderChangelogHtml(sanitize) {
+  return CHANGELOG.map(entry => {
+    const changesHtml = entry.changes
+      .map(c => `<li>${sanitize(c)}</li>`)
+      .join("");
+    return `
+      <div class="changelog-entry">
+        <div class="changelog-header">
+          <span class="changelog-version">v${sanitize(entry.version)}</span>
+          <span class="changelog-date">${sanitize(entry.date)}</span>
+        </div>
+        <ul class="changelog-changes">${changesHtml}</ul>
+      </div>`;
+  }).join("");
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -152,6 +183,10 @@ export default {
             power: payload.power,
             timestamp: Date.now()
           };
+          // Ротація на наступного ведмедика в межах команди (фікс: раніше індекс ніколи не змінювався)
+          const currentIdx = room.activeBearIndex[payload.team];
+          room.activeBearIndex[payload.team] = (currentIdx + 1) % 3;
+
           // Перемикаємо хід на іншу команду
           room.activeTeam = payload.team === "TEAM_A" ? "TEAM_B" : "TEAM_A";
         } else if (action === "GAME_OVER") {
@@ -202,6 +237,8 @@ export default {
         });
       }
 
+      const changelogHtml = renderChangelogHtml(sanitize);
+
       const html = `<!DOCTYPE html>
 <html lang="uk">
 <head>
@@ -216,7 +253,7 @@ export default {
     body { font-family: 'Fredoka', cursive, system-ui, sans-serif; background: #1a0b2e; color: white; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; margin: 0; padding: 15px; overflow-x: hidden; }
     h1 { margin: 0 0 10px 0; color: #ff75a0; text-shadow: 0 0 15px rgba(255,117,160,0.6); font-size: 28px; letter-spacing: 1px; }
     
-    .main-layout { display: flex; gap: 20px; align-items: flex-start; justify-content: center; width: 100%; max-width: 1500px; }
+    .main-layout { display: flex; gap: 20px; align-items: flex-start; justify-content: center; width: 100%; max-width: 1800px; flex-wrap: wrap; }
     
     .game-container { position: relative; display: flex; flex-direction: column; align-items: center; }
     canvas { border: 4px solid #ff75a0; border-radius: 20px; background: linear-gradient(to bottom, #2b1055 0%, #755bea 50%, #ff75a0 100%); box-shadow: 0 15px 50px rgba(0,0,0,0.7); }
@@ -225,6 +262,19 @@ export default {
     .leaderboard-card h3 { margin-top: 0; color: #ffbe0b; text-align: center; font-size: 20px; text-shadow: 0 0 8px rgba(255,190,11,0.4); }
     .leaderboard-list { list-style: none; padding: 0; margin: 0; font-size: 14px; }
     .leaderboard-list li { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid rgba(255,255,255,0.1); word-break: break-all; }
+
+    .version-card { background: rgba(255,255,255,0.07); backdrop-filter: blur(12px); padding: 20px; border-radius: 20px; border: 1px solid rgba(255,255,255,0.15); width: 250px; max-height: 550px; overflow-y: auto; box-shadow: 0 8px 32px rgba(0,0,0,0.3); }
+    .version-card h3 { margin-top: 0; color: #4ecca3; text-align: center; font-size: 18px; text-shadow: 0 0 8px rgba(78,204,163,0.4); }
+    .version-card::-webkit-scrollbar { width: 6px; }
+    .version-card::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.2); border-radius: 3px; }
+    .changelog-entry { margin-bottom: 16px; padding-bottom: 12px; border-bottom: 1px solid rgba(255,255,255,0.1); }
+    .changelog-entry:last-child { border-bottom: none; margin-bottom: 0; }
+    .changelog-header { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 6px; }
+    .changelog-version { color: #ffbe0b; font-weight: 700; font-size: 15px; }
+    .changelog-date { color: rgba(255,255,255,0.5); font-size: 11px; }
+    .changelog-changes { list-style: none; padding: 0; margin: 0; font-size: 12px; line-height: 1.5; color: rgba(255,255,255,0.85); }
+    .changelog-changes li { padding: 3px 0 3px 14px; position: relative; }
+    .changelog-changes li::before { content: "•"; position: absolute; left: 0; color: #4ecca3; }
 
     .status-bar { display: flex; gap: 20px; align-items: center; justify-content: space-between; font-size: 15px; font-weight: 600; background: rgba(0,0,0,0.4); backdrop-filter: blur(8px); padding: 10px 24px; border-radius: 30px; margin-bottom: 12px; border: 1px solid rgba(255,255,255,0.15); width: 1200px; }
     .team-badge { display: flex; align-items: center; gap: 8px; }
@@ -289,6 +339,13 @@ export default {
   </div>
 
   <div class="main-layout">
+    <div class="version-card">
+      <h3>🔄 Історія версій</h3>
+      <div id="changelogList">
+        ${changelogHtml}
+      </div>
+    </div>
+
     <div class="game-container">
       <canvas id="gameCanvas" width="1200" height="550"></canvas>
     </div>
@@ -327,13 +384,31 @@ export default {
       { id: 'HEAD', dx: 0, dy: -15, r: 8 }     // 10. Голова (Останній постріл)
     ];
 
+    // --- SEEDED RNG (фікс: раніше Math.random() давав різний рельєф/вітер у кожного гравця) ---
+    // Детермінований генератор чисел, засіяний ID кімнати — обидва клієнти,
+    // знаючи один і той самий roomId, отримають ідентичний результат.
+    function hashString(str) {
+      let h = 0;
+      for (let i = 0; i < str.length; i++) h = (h * 31 + str.charCodeAt(i)) | 0;
+      return Math.abs(h) || 1;
+    }
+    function seededRandom(seed) {
+      let s = seed % 2147483647;
+      if (s <= 0) s += 2147483646;
+      return function() {
+        s = (s * 16807) % 2147483647;
+        return (s - 1) / 2147483646;
+      };
+    }
+
     // Оновлена розмірність ландшафту (1200px)
     const terrain = new Array(canvas.width);
-    function generateTerrain() {
-      const type = Math.floor(Math.random() * 4);
-      const baseHeight = 320 + Math.random() * 60;
-      const freq1 = 0.005 + Math.random() * 0.008;
-      const freq2 = 0.015 + Math.random() * 0.015;
+    function generateTerrain(roomId) {
+      const rand = seededRandom(hashString(roomId || "default-seed"));
+      const type = Math.floor(rand() * 4);
+      const baseHeight = 320 + rand() * 60;
+      const freq1 = 0.005 + rand() * 0.008;
+      const freq2 = 0.015 + rand() * 0.015;
 
       for (let x = 0; x < canvas.width; x++) {
         let h = baseHeight;
@@ -343,8 +418,10 @@ export default {
         else h += Math.cos(x * freq1) * 90 + Math.sin(x * freq2) * 35;
         terrain[x] = Math.max(180, Math.min(480, h));
       }
+      // Вітер теж має бути однаковим для обох гравців — генеруємо тим самим seed'ом
+      wind = rand() * 0.4 - 0.2;
     }
-    generateTerrain();
+    generateTerrain(); // початковий фоновий рельєф до старту гри (перегенерується з roomId при старті)
 
     // Партикли та візуальні ефекти
     let particles = [];
@@ -375,7 +452,7 @@ export default {
       { id: 'B3', x: 1080, y: 0, partsCount: 10, color: '#800f2f', highlight: '#c9184a', angle: -Math.PI*0.75, power: 0, isCharging: false }
     ];
 
-    let wind = (Math.random() * 0.4 - 0.2);
+    let wind = 0; // Встановлюється в generateTerrain(roomId) після старту гри
     let bullet = null;
     const keys = {};
 
@@ -402,7 +479,8 @@ export default {
       const data = await res.json();
       window.currentRoom = data.roomState;
       window.myTeam = 'TEAM_A';
-      
+      generateTerrain(data.roomId); // фікс: детермінований рельєф/вітер за roomId
+
       document.getElementById('teamAName').innerText = username;
       document.getElementById('teamBName').innerText = "Бот 🤖";
       document.getElementById('lobbyModal').style.display = 'none';
@@ -422,7 +500,8 @@ export default {
       const data = await res.json();
       window.currentRoom = data.roomState;
       window.myTeam = 'TEAM_A';
-      
+      generateTerrain(data.roomId); // фікс: детермінований рельєф/вітер за roomId
+
       alert('Кімнату створено! Поділіться кодом з другом: ' + data.roomId);
       document.getElementById('teamAName').innerText = username;
       document.getElementById('teamBName').innerText = "Очікування суперника...";
@@ -446,6 +525,7 @@ export default {
 
       window.currentRoom = data.roomState;
       window.myTeam = 'TEAM_B';
+      generateTerrain(data.roomState.roomId); // фікс: той самий seed, що й у творця кімнати
 
       document.getElementById('teamAName').innerText = data.roomState.teamA.username;
       document.getElementById('teamBName').innerText = username;

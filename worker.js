@@ -1,6 +1,16 @@
 // --- ІСТОРІЯ ВЕРСІЙ ---
 const CHANGELOG = [
   {
+    version: "2.3",
+    date: "2026-08-03",
+    changes: [
+      "Виправлено: AI тепер коректно робить перший хід, якщо виграє RPS",
+      "Виправлено: Гра тепер завжди коректно завершується (damage від AI репортується на сервер)",
+      "Видалено лідерборд та залежність від Cloudflare KV — стан кімнат зберігається в RAM",
+      "Додано модальне вікно завершення гри з очками та кнопками Реванш/Меню"
+    ]
+  },
+  {
     version: "2.2",
     date: "2026-08-03",
     changes: [
@@ -553,6 +563,9 @@ export default {
 
     function closeRpsModal() {
       document.getElementById('rpsModal').style.display = 'none';
+      if (window.currentRoom && window.currentRoom.mode === 'AI' && window.currentRoom.activeTeam === 'TEAM_B') {
+        setTimeout(handleAiTurn, 1000);
+      }
     }
 
     function showGameOverModal(room) {
@@ -883,13 +896,16 @@ export default {
         }
       });
 
-      if (totalDamageParts > 0 && ownerTeam === window.myTeam) {
+      if (totalDamageParts > 0) {
+        const isAiShot = window.currentRoom.mode === 'AI' && ownerTeam === 'TEAM_B';
+        const token = isAiShot ? 'BOT_TOKEN' : window.playerToken;
+
         const res = await fetch('/api/game-action', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             roomId: window.currentRoom.roomId,
-            playerToken: window.playerToken,
+            playerToken: token,
             action: 'REPORT_DAMAGE',
             payload: { damageParts: totalDamageParts }
           })

@@ -262,16 +262,15 @@ export default {
           const currentIdx = room.activeBearIndex[actingTeam];
           room.activeBearIndex[actingTeam] = (currentIdx + 1) % 3;
           room.activeTeam = actingTeam === "TEAM_A" ? "TEAM_B" : "TEAM_A";
-        } else if (action === "REPORT_DAMAGE") {
-          const damage = Math.min(30, Math.max(1, Number(payload.damageParts) || 1));
+
+          // --- ДОДАНА ЛОГІКА: Кожен постріл забирає 1 частинку на сервері ---
           if (actingTeam === "TEAM_A") {
-            room.teamB.partsLeft = Math.max(0, room.teamB.partsLeft - damage);
-            room.teamA.score += damage * 20;
+            room.teamA.partsLeft = Math.max(0, room.teamA.partsLeft - 1);
           } else {
-            room.teamA.partsLeft = Math.max(0, room.teamA.partsLeft - damage);
-            room.teamB.score += damage * 20;
+            room.teamB.partsLeft = Math.max(0, room.teamB.partsLeft - 1);
           }
 
+          // Якщо команда вбила себе останнім пострілом
           if (room.teamA.partsLeft <= 0 || room.teamB.partsLeft <= 0) {
             room.status = "FINISHED";
           }

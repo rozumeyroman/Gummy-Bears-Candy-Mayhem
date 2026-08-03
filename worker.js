@@ -140,7 +140,6 @@ export default {
 
         await env.LEADERBOARD.put("room:" + roomId, JSON.stringify(roomState), { expirationTtl: 3600 });
 
-        // Повертаємо токен тільки творцю
         const clientState = JSON.parse(JSON.stringify(roomState));
         delete clientState.teamA.token;
         delete clientState.teamB.token;
@@ -221,7 +220,6 @@ export default {
 
         let room = JSON.parse(rawRoom);
 
-        // Перевірка токена автора дії
         const isTeamA = playerToken === room.teamA.token;
         const isTeamB = playerToken === room.teamB.token || (room.mode === "AI" && playerToken === "BOT_TOKEN");
 
@@ -249,7 +247,6 @@ export default {
           room.activeBearIndex[actingTeam] = (currentIdx + 1) % 3;
           room.activeTeam = actingTeam === "TEAM_A" ? "TEAM_B" : "TEAM_A";
         } else if (action === "REPORT_DAMAGE") {
-          // Сервер сам нараховує очки та контролює поразку
           const damage = Math.min(30, Math.max(1, Number(payload.damageParts) || 1));
           if (actingTeam === "TEAM_A") {
             room.teamB.partsLeft = Math.max(0, room.teamB.partsLeft - damage);
@@ -259,7 +256,6 @@ export default {
             room.teamB.score += damage * 20;
           }
 
-          // Автоматична перевірка фіналу на сервері
           if (room.teamA.partsLeft <= 0 || room.teamB.partsLeft <= 0) {
             room.status = "FINISHED";
             let winnerTeam = "DRAW";
@@ -273,7 +269,7 @@ export default {
 
               scores.push({
                 username: winnerData.username,
-                score: winnerData.score + 500, // Серверний бонус за перемогу
+                score: winnerData.score + 500,
                 date: new Date().toLocaleDateString()
               });
 
@@ -350,7 +346,6 @@ export default {
     .score-val { color: #ffbe0b; }
     .turn-text { color: #4ecca3; font-size: 16px; font-weight: bold; }
 
-    /* Modal Overlay */
     #lobbyModal, #rpsModal { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(10,5,20,0.9); backdrop-filter: blur(10px); display: flex; align-items: center; justify-content: center; z-index: 100; }
     .modal-box { background: linear-gradient(135deg, #3d1e6d, #2b1055); padding: 35px; border-radius: 24px; text-align: center; border: 2px solid #ff75a0; width: 420px; box-shadow: 0 0 30px rgba(255,117,160,0.4); }
     .modal-box input { width: 90%; padding: 12px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.2); background: rgba(0,0,0,0.3); color: white; font-size: 16px; text-align: center; margin: 10px 0; outline: none; font-family: inherit; }
@@ -362,7 +357,6 @@ export default {
     .action-btn { background: #ff75a0; color: white; border: none; padding: 12px 20px; border-radius: 12px; font-size: 16px; font-weight: bold; cursor: pointer; transition: 0.2s; font-family: inherit; margin-top: 8px; }
     .action-btn:hover { background: #e05480; transform: translateY(-2px); }
 
-    /* 3D Coin Animation */
     .coin-container { perspective: 1000px; margin: 20px auto; width: 80px; height: 80px; }
     .coin { width: 100%; height: 100%; position: relative; transform-style: preserve-3d; transition: transform 2s cubic-bezier(0.175, 0.885, 0.32, 1.275); }
     .coin-face { position: absolute; width: 100%; height: 100%; border-radius: 50%; backface-visibility: hidden; display: flex; align-items: center; justify-content: center; font-size: 36px; border: 4px solid #ffbe0b; box-shadow: 0 0 15px rgba(255,190,11,0.6); }
@@ -372,7 +366,6 @@ export default {
 </head>
 <body>
 
-  <!-- LOBBY MODAL -->
   <div id="lobbyModal">
     <div class="modal-box">
       <h2>🍬 Gummy Bears 3v3</h2>
@@ -396,7 +389,6 @@ export default {
     </div>
   </div>
 
-  <!-- RPS RESULT MODAL WITH 3D COIN FLIP -->
   <div id="rpsModal" style="display:none;">
     <div class="modal-box">
       <h2 id="rpsTitle">🎲 Результат RPS</h2>
@@ -552,7 +544,8 @@ export default {
       const choiceA = icons[room.teamA.rpsChoice] || '🪨';
       const choiceB = icons[room.teamB.rpsChoice] || '🪨';
 
-      detail.innerText = `${room.teamA.username} (${choiceA})  VS  ${room.teamB.username} (${choiceB})`;
+      // Виправлено: Екранування $ запобігає конфлікту при збірці Wrangler
+      detail.innerText = `\${room.teamA.username} (\${choiceA})  VS  \${room.teamB.username} (\${choiceB})`;
 
       if (room.rpsResult.isTie) {
         coinContainer.style.display = 'block';
@@ -560,17 +553,17 @@ export default {
         modal.style.display = 'flex';
 
         setTimeout(() => {
-          const flips = room.rpsResult.winner === 'TEAM_A' ? 1800 : 1980; // 5 full turns + side
-          coinElem.style.transform = `rotateY(${flips}deg)`;
+          const flips = room.rpsResult.winner === 'TEAM_A' ? 1800 : 1980;
+          coinElem.style.transform = `rotateY(\${flips}deg)`;
           setTimeout(() => {
             const winnerName = room.rpsResult.winner === 'TEAM_A' ? room.teamA.username : room.teamB.username;
-            winnerText.innerText = `Жереб визначив! Першим ходить ${winnerName}!`;
+            winnerText.innerText = `Жереб визначив! Першим ходить \${winnerName}!`;
           }, 2000);
         }, 300);
       } else {
         coinContainer.style.display = 'none';
         const winnerName = room.rpsResult.winner === 'TEAM_A' ? room.teamA.username : room.teamB.username;
-        winnerText.innerText = `Перемога в RPS! Першим ходить ${winnerName}!`;
+        winnerText.innerText = `Перемога в RPS! Першим ходить \${winnerName}!`;
         modal.style.display = 'flex';
       }
     }
@@ -680,7 +673,7 @@ export default {
       document.getElementById('scoreDisplay').innerText = myScore;
 
       if (window.currentRoom.status === "WAITING") {
-        turnInfo.innerText = "Очікування другого гравця...";
+        turnInfo.innerText = "Очікування второго гравця...";
       } else if (window.isMyTurn) {
         turnInfo.innerText = "Хід: Ваш хід! 🟩";
       } else {

@@ -18,7 +18,7 @@ const CHANGELOG = [
     changes: [
       "Виправлено критичний краш при старті через temporal dead zone змінної wind",
       "Синхронізовано activeTeam/activeBearIndex з відповіддю сервера",
-      "Хід бота тепер репортується на сервер.",
+      "Хід бота тепер репортується на сервер",
       "Виправлено обчислення bearIndex для команди B",
       "Додано лічильник очок (scoreDisplay)"
     ]
@@ -54,7 +54,7 @@ export default {
 
     function sanitize(str) {
       if (typeof str !== 'string') return '';
-      return str.replace(/[&<>"']/g, function(m) {
+      return str.replace(/[&<>"']/g, function (m) {
         return {
           '&': '&amp;',
           '<': '&lt;',

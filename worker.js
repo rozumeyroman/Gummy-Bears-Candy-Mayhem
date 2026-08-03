@@ -1,6 +1,14 @@
 // --- ІСТОРІЯ ВЕРСІЙ ---
 const CHANGELOG = [
   {
+    version: "2.4",
+    date: "2026-08-03",
+    changes: [
+      "Виправлено: Фінальне модальне вікно перемоги/поразки тепер миттєво спрацьовує при знищенні останнього ведмедя",
+      "Виправлено: Кнопка Реванш тепер повністю скидає стан частин ведмедиків (10/10) для нового матчу"
+    ]
+  },
+  {
     version: "2.3",
     date: "2026-08-03",
     changes: [
@@ -14,7 +22,7 @@ const CHANGELOG = [
     version: "2.2",
     date: "2026-08-03",
     changes: [
-      "Безпека: Додано токени сесії (playerToken) для захисту від діій сторонніх осіб у кімнаті",
+      "Безпека: Додано токени сесії (playerToken) для захисту від дій сторонніх осіб у кімнаті",
       "Безпека: Розрахунок очок і фіксація перемоги перенесені повністю на сервер (клієнт більше не відправляє finalScore)",
       "Безпека: Коди кімнат збільшено до 6 символів (наприклад, RM-8F3K2A) та додано HTTP-заголовки безпеки (CSP, nosniff)",
       "UX: Нікнейм тепер надійно зберігається в localStorage і модальне вікно не з'являється після кожного матчу",
@@ -111,7 +119,6 @@ export default {
       }
       return { winner: 'TEAM_B', isTie: false };
     }
-
 
     // --- API: Створити кімнату ---
     if (url.pathname === "/api/create-room" && request.method === "POST") {
@@ -422,8 +429,6 @@ export default {
     <div class="game-container">
       <canvas id="gameCanvas" width="1200" height="550"></canvas>
     </div>
-
-
   </div>
 
   <script>
@@ -537,7 +542,6 @@ export default {
       const choiceA = icons[room.teamA.rpsChoice] || '🪨';
       const choiceB = icons[room.teamB.rpsChoice] || '🪨';
 
-      // Безпечна конкатенація
       detail.innerText = room.teamA.username + ' (' + choiceA + ') VS ' + room.teamB.username + ' (' + choiceB + ')';
 
       if (room.rpsResult.isTie) {
@@ -604,6 +608,11 @@ export default {
 
     function rematch() {
       document.getElementById('gameOverModal').style.display = 'none';
+      
+      // Скидаємо частинки ведмедиків на 10 для нової гри
+      teamA.forEach(b => b.partsCount = 10);
+      teamB.forEach(b => b.partsCount = 10);
+
       if (window.currentRoom && window.currentRoom.mode === 'AI') {
         startAiGame();
       } else {
@@ -900,6 +909,10 @@ export default {
         const isAiShot = window.currentRoom.mode === 'AI' && ownerTeam === 'TEAM_B';
         const token = isAiShot ? 'BOT_TOKEN' : window.playerToken;
 
+        // Оновлюємо partsLeft локально, щоб гарантувати виклик фіналу
+        window.currentRoom.teamA.partsLeft = teamA.reduce((acc, b) => acc + Math.max(0, b.partsCount), 0);
+        window.currentRoom.teamB.partsLeft = teamB.reduce((acc, b) => acc + Math.max(0, b.partsCount), 0);
+
         const res = await fetch('/api/game-action', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -914,9 +927,12 @@ export default {
         if (data.room) {
           window.currentRoom = data.room;
           updateTurnUI();
-          if (data.room.status === "FINISHED") {
-            showGameOverModal(data.room);
-          }
+        }
+
+        // Гарантована перевірка та показ фінального модального вікна
+        if (window.currentRoom.teamA.partsLeft <= 0 || window.currentRoom.teamB.partsLeft <= 0 || window.currentRoom.status === "FINISHED") {
+          window.currentRoom.status = "FINISHED";
+          showGameOverModal(window.currentRoom);
         }
       }
     }

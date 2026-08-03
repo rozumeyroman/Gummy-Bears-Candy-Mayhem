@@ -102,18 +102,6 @@ export default {
       return { winner: 'TEAM_B', isTie: false };
     }
 
-    // --- API: Отримати Топ-10 лідерів ---
-    if (url.pathname === "/api/leaderboard" && request.method === "GET") {
-      try {
-        const rawData = await env.LEADERBOARD.get("top_scores");
-        const scores = rawData ? JSON.parse(rawData) : [];
-        return new Response(JSON.stringify(scores), {
-          headers: { "Content-Type": "application/json", "X-Content-Type-Options": "nosniff" }
-        });
-      } catch (err) {
-        return new Response(JSON.stringify([]), { headers: { "Content-Type": "application/json" } });
-      }
-    }
 
     // --- API: Створити кімнату ---
     if (url.pathname === "/api/create-room" && request.method === "POST") {
@@ -269,25 +257,6 @@ export default {
 
           if (room.teamA.partsLeft <= 0 || room.teamB.partsLeft <= 0) {
             room.status = "FINISHED";
-            let winnerTeam = "DRAW";
-            if (room.teamA.partsLeft > 0 && room.teamB.partsLeft <= 0) winnerTeam = "TEAM_A";
-            if (room.teamB.partsLeft > 0 && room.teamA.partsLeft <= 0) winnerTeam = "TEAM_B";
-
-            if (winnerTeam !== "DRAW") {
-              const winnerData = winnerTeam === "TEAM_A" ? room.teamA : room.teamB;
-              const rawScores = await env.LEADERBOARD.get("top_scores");
-              let scores = rawScores ? JSON.parse(rawScores) : [];
-
-              scores.push({
-                username: winnerData.username,
-                score: winnerData.score + 500,
-                date: new Date().toLocaleDateString()
-              });
-
-              scores.sort((a, b) => b.score - a.score);
-              scores = scores.slice(0, 10);
-              await env.LEADERBOARD.put("top_scores", JSON.stringify(scores));
-            }
           }
         }
 
@@ -307,18 +276,6 @@ export default {
 
     // --- FRONTEND ---
     if (request.method === "GET") {
-      const rawData = await env.LEADERBOARD.get("top_scores");
-      const scores = rawData ? JSON.parse(rawData) : [];
-
-      let leaderboardHtml = "";
-      if (scores.length === 0) {
-        leaderboardHtml = "<li><i>Поки немає рекордів</i></li>";
-      } else {
-        scores.forEach((item, idx) => {
-          leaderboardHtml += `<li><span>${idx + 1}. ${sanitize(item.username)}</span> <b>${item.score}</b></li>`;
-        });
-      }
-
       const changelogHtml = renderChangelogHtml(sanitize);
 
       const html = `<!DOCTYPE html>
@@ -339,11 +296,8 @@ export default {
     .game-container { position: relative; display: flex; flex-direction: column; align-items: center; }
     canvas { border: 4px solid #ff75a0; border-radius: 20px; background: linear-gradient(to bottom, #2b1055 0%, #755bea 50%, #ff75a0 100%); box-shadow: 0 15px 50px rgba(0,0,0,0.7); }
 
-    .leaderboard-card, .version-card { background: rgba(255,255,255,0.07); backdrop-filter: blur(12px); padding: 20px; border-radius: 20px; border: 1px solid rgba(255,255,255,0.15); width: 250px; max-height: 550px; overflow-y: auto; box-shadow: 0 8px 32px rgba(0,0,0,0.3); }
-    .leaderboard-card h3 { margin-top: 0; color: #ffbe0b; text-align: center; }
+    .version-card { background: rgba(255,255,255,0.07); backdrop-filter: blur(12px); padding: 20px; border-radius: 20px; border: 1px solid rgba(255,255,255,0.15); width: 250px; max-height: 550px; overflow-y: auto; box-shadow: 0 8px 32px rgba(0,0,0,0.3); }
     .version-card h3 { margin-top: 0; color: #4ecca3; text-align: center; }
-    .leaderboard-list { list-style: none; padding: 0; margin: 0; font-size: 14px; }
-    .leaderboard-list li { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid rgba(255,255,255,0.1); }
 
     .changelog-entry { margin-bottom: 14px; padding-bottom: 10px; border-bottom: 1px solid rgba(255,255,255,0.1); }
     .changelog-header { display: flex; justify-content: space-between; margin-bottom: 4px; }
@@ -357,7 +311,16 @@ export default {
     .score-val { color: #ffbe0b; }
     .turn-text { color: #4ecca3; font-size: 16px; font-weight: bold; }
 
-    #lobbyModal, #rpsModal { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(10,5,20,0.9); backdrop-filter: blur(10px); display: flex; align-items: center; justify-content: center; z-index: 100; }
+    #lobbyModal, #rpsModal, #gameOverModal { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(10,5,20,0.9); backdrop-filter: blur(10px); display: flex; align-items: center; justify-content: center; z-index: 100; }
+    .game-over-title { font-size: 32px; margin: 0 0 5px 0; }
+    .game-over-subtitle { font-size: 15px; color: #ddd; margin-bottom: 18px; }
+    .score-row { display: flex; justify-content: space-between; align-items: center; padding: 10px 16px; border-radius: 12px; margin-bottom: 8px; font-size: 15px; }
+    .score-row.team-a { background: rgba(82,183,136,0.2); border: 1px solid rgba(82,183,136,0.4); }
+    .score-row.team-b { background: rgba(255,77,109,0.2); border: 1px solid rgba(255,77,109,0.4); }
+    .score-row .score-label { font-weight: 600; }
+    .score-row .score-value { color: #ffbe0b; font-weight: 700; font-size: 18px; }
+    .game-over-btns { display: flex; gap: 10px; margin-top: 18px; }
+    .game-over-btns .action-btn { flex: 1; }
     .modal-box { background: linear-gradient(135deg, #3d1e6d, #2b1055); padding: 35px; border-radius: 24px; text-align: center; border: 2px solid #ff75a0; width: 420px; box-shadow: 0 0 30px rgba(255,117,160,0.4); }
     .modal-box input { width: 90%; padding: 12px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.2); background: rgba(0,0,0,0.3); color: white; font-size: 16px; text-align: center; margin: 10px 0; outline: none; font-family: inherit; }
     
@@ -417,6 +380,18 @@ export default {
     </div>
   </div>
 
+  <div id="gameOverModal" style="display:none;">
+    <div class="modal-box">
+      <h2 class="game-over-title" id="gameOverTitle">🎉 ПЕРЕМОГА!</h2>
+      <p class="game-over-subtitle" id="gameOverSubtitle">Ви знищили усіх ведмедиків суперника!</p>
+      <div id="gameOverScores"></div>
+      <div class="game-over-btns">
+        <button class="action-btn" onclick="rematch()">🔄 Реванш</button>
+        <button class="action-btn" style="background:rgba(255,255,255,0.15)" onclick="backToMenu()">🏠 Меню</button>
+      </div>
+    </div>
+  </div>
+
   <h1>🍬 Gummy Bears: Candy Mayhem 3v3 🍬</h1>
 
   <div class="status-bar">
@@ -438,10 +413,7 @@ export default {
       <canvas id="gameCanvas" width="1200" height="550"></canvas>
     </div>
 
-    <div class="leaderboard-card">
-      <h3>🏆 ТОП-10 ЛІДЕРІВ</h3>
-      <ol class="leaderboard-list">${leaderboardHtml}</ol>
-    </div>
+
   </div>
 
   <script>
@@ -581,6 +553,57 @@ export default {
 
     function closeRpsModal() {
       document.getElementById('rpsModal').style.display = 'none';
+    }
+
+    function showGameOverModal(room) {
+      if (window.pollingTimer) { clearInterval(window.pollingTimer); window.pollingTimer = null; }
+
+      const winner = room.teamA.partsLeft > 0 ? 'TEAM_A' : (room.teamB.partsLeft > 0 ? 'TEAM_B' : 'DRAW');
+      const isWin = winner === window.myTeam;
+
+      const titleEl = document.getElementById('gameOverTitle');
+      const subtitleEl = document.getElementById('gameOverSubtitle');
+      const scoresEl = document.getElementById('gameOverScores');
+
+      if (winner === 'DRAW') {
+        titleEl.innerText = '🤝 НІЧИЯ!';
+        subtitleEl.innerText = 'Обидві команди знищені одночасно!';
+      } else if (isWin) {
+        titleEl.innerText = '🎉 ПЕРЕМОГА!';
+        subtitleEl.innerText = 'Ви знищили усіх ведмедиків суперника!';
+      } else {
+        titleEl.innerText = '😱 ПОРАЗКА!';
+        subtitleEl.innerText = 'Ваших ведмедиків знищено...';
+      }
+
+      scoresEl.innerHTML =
+        '<div class="score-row team-a">' +
+          '<span class="score-label">🟦 ' + (room.teamA.username || 'Команда 1') + '</span>' +
+          '<span class="score-value">' + room.teamA.score + ' очок</span>' +
+        '</div>' +
+        '<div class="score-row team-b">' +
+          '<span class="score-label">🟥 ' + (room.teamB.username || 'Команда 2') + '</span>' +
+          '<span class="score-value">' + room.teamB.score + ' очок</span>' +
+        '</div>';
+
+      document.getElementById('gameOverModal').style.display = 'flex';
+    }
+
+    function rematch() {
+      document.getElementById('gameOverModal').style.display = 'none';
+      if (window.currentRoom && window.currentRoom.mode === 'AI') {
+        startAiGame();
+      } else {
+        document.getElementById('lobbyModal').style.display = 'flex';
+      }
+    }
+
+    function backToMenu() {
+      document.getElementById('gameOverModal').style.display = 'none';
+      window.currentRoom = null;
+      window.playerToken = null;
+      if (window.pollingTimer) { clearInterval(window.pollingTimer); window.pollingTimer = null; }
+      document.getElementById('lobbyModal').style.display = 'flex';
     }
 
     async function startAiGame() {
@@ -876,9 +899,7 @@ export default {
           window.currentRoom = data.room;
           updateTurnUI();
           if (data.room.status === "FINISHED") {
-            const winner = data.room.teamA.partsLeft > 0 ? "TEAM_A" : "TEAM_B";
-            const msg = winner === window.myTeam ? "🎉 ПЕРЕМОГА!" : "😱 ПОРАЗКА!";
-            alert(msg);
+            showGameOverModal(data.room);
           }
         }
       }

@@ -544,8 +544,8 @@ export default {
       const choiceA = icons[room.teamA.rpsChoice] || '🪨';
       const choiceB = icons[room.teamB.rpsChoice] || '🪨';
 
-      // Виправлено: Екранування $ запобігає конфлікту при збірці Wrangler
-      detail.innerText = `\${room.teamA.username} (\${choiceA})  VS  \${room.teamB.username} (\${choiceB})`;
+      // Безпечна конкатенація
+      detail.innerText = room.teamA.username + ' (' + choiceA + ') VS ' + room.teamB.username + ' (' + choiceB + ')';
 
       if (room.rpsResult.isTie) {
         coinContainer.style.display = 'block';
@@ -554,16 +554,16 @@ export default {
 
         setTimeout(() => {
           const flips = room.rpsResult.winner === 'TEAM_A' ? 1800 : 1980;
-          coinElem.style.transform = `rotateY(\${flips}deg)`;
+          coinElem.style.transform = 'rotateY(' + flips + 'deg)';
           setTimeout(() => {
             const winnerName = room.rpsResult.winner === 'TEAM_A' ? room.teamA.username : room.teamB.username;
-            winnerText.innerText = `Жереб визначив! Першим ходить \${winnerName}!`;
+            winnerText.innerText = 'Жереб визначив! Першим ходить ' + winnerName + '!';
           }, 2000);
         }, 300);
       } else {
         coinContainer.style.display = 'none';
         const winnerName = room.rpsResult.winner === 'TEAM_A' ? room.teamA.username : room.teamB.username;
-        winnerText.innerText = `Перемога в RPS! Першим ходить \${winnerName}!`;
+        winnerText.innerText = 'Перемога в RPS! Першим ходить ' + winnerName + '!';
         modal.style.display = 'flex';
       }
     }
@@ -673,7 +673,7 @@ export default {
       document.getElementById('scoreDisplay').innerText = myScore;
 
       if (window.currentRoom.status === "WAITING") {
-        turnInfo.innerText = "Очікування второго гравця...";
+        turnInfo.innerText = "Очікування другого гравця...";
       } else if (window.isMyTurn) {
         turnInfo.innerText = "Хід: Ваш хід! 🟩";
       } else {

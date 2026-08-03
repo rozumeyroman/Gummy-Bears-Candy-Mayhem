@@ -1,6 +1,16 @@
 // --- ІСТОРІЯ ВЕРСІЙ ---
 const CHANGELOG = [
   {
+    version: "2.5",
+    date: "2026-08-03",
+    changes: [
+      "Виправлено: Реванш тепер повертає в лобі для нового вибору RPS (Камінь/Ножиці/Папір)",
+      "Виправлено: Повністю скидається черга ходів ведмедиків (1 -> 2 -> 3) при повторних матчах",
+      "UX: З фінального модального вікна прибрано некоректний блок з очками",
+      "Виправлено: Гарантовано спрацьовує вікно перемоги/поразки після кожної зіграної партії"
+    ]
+  },
+  {
     version: "2.4",
     date: "2026-08-03",
     changes: [
@@ -263,14 +273,12 @@ export default {
           room.activeBearIndex[actingTeam] = (currentIdx + 1) % 3;
           room.activeTeam = actingTeam === "TEAM_A" ? "TEAM_B" : "TEAM_A";
 
-          // --- ДОДАНА ЛОГІКА: Кожен постріл забирає 1 частинку на сервері ---
           if (actingTeam === "TEAM_A") {
             room.teamA.partsLeft = Math.max(0, room.teamA.partsLeft - 1);
           } else {
             room.teamB.partsLeft = Math.max(0, room.teamB.partsLeft - 1);
           }
 
-          // Якщо команда вбила себе останнім пострілом
           if (room.teamA.partsLeft <= 0 || room.teamB.partsLeft <= 0) {
             room.status = "FINISHED";
           }
@@ -324,17 +332,11 @@ export default {
     .changelog-changes li::before { content: "•"; position: absolute; left: 0; color: #4ecca3; }
 
     .status-bar { display: flex; gap: 20px; align-items: center; justify-content: space-between; font-size: 15px; font-weight: 600; background: rgba(0,0,0,0.4); backdrop-filter: blur(8px); padding: 10px 24px; border-radius: 30px; margin-bottom: 12px; border: 1px solid rgba(255,255,255,0.15); width: 1200px; }
-    .score-val { color: #ffbe0b; }
     .turn-text { color: #4ecca3; font-size: 16px; font-weight: bold; }
 
     #lobbyModal, #rpsModal, #gameOverModal { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(10,5,20,0.9); backdrop-filter: blur(10px); display: flex; align-items: center; justify-content: center; z-index: 100; }
     .game-over-title { font-size: 32px; margin: 0 0 5px 0; }
     .game-over-subtitle { font-size: 15px; color: #ddd; margin-bottom: 18px; }
-    .score-row { display: flex; justify-content: space-between; align-items: center; padding: 10px 16px; border-radius: 12px; margin-bottom: 8px; font-size: 15px; }
-    .score-row.team-a { background: rgba(82,183,136,0.2); border: 1px solid rgba(82,183,136,0.4); }
-    .score-row.team-b { background: rgba(255,77,109,0.2); border: 1px solid rgba(255,77,109,0.4); }
-    .score-row .score-label { font-weight: 600; }
-    .score-row .score-value { color: #ffbe0b; font-weight: 700; font-size: 18px; }
     .game-over-btns { display: flex; gap: 10px; margin-top: 18px; }
     .game-over-btns .action-btn { flex: 1; }
     .modal-box { background: linear-gradient(135deg, #3d1e6d, #2b1055); padding: 35px; border-radius: 24px; text-align: center; border: 2px solid #ff75a0; width: 420px; box-shadow: 0 0 30px rgba(255,117,160,0.4); }
@@ -400,7 +402,6 @@ export default {
     <div class="modal-box">
       <h2 class="game-over-title" id="gameOverTitle">🎉 ПЕРЕМОГА!</h2>
       <p class="game-over-subtitle" id="gameOverSubtitle">Ви знищили усіх ведмедиків суперника!</p>
-      <div id="gameOverScores"></div>
       <div class="game-over-btns">
         <button class="action-btn" onclick="rematch()">🔄 Реванш</button>
         <button class="action-btn" style="background:rgba(255,255,255,0.15)" onclick="backToMenu()">🏠 Меню</button>
@@ -412,7 +413,6 @@ export default {
 
   <div class="status-bar">
     <div>🟦 <span id="teamAName" style="color: #52b788;">Команда 1</span></div>
-    <div>Очки: <span id="scoreDisplay" class="score-val">0</span></div>
     <div class="turn-text" id="turn-info">Очікування...</div>
     <div>🟥 <span id="teamBName" style="color: #ff4d6d;">Команда 2</span></div>
     <div>🍃 Вітер: <span id="windDisplay">0</span></div>
@@ -522,6 +522,11 @@ export default {
       }
     });
 
+    function resetBears() {
+      teamA.forEach((b, idx) => { b.partsCount = 10; b.x = 120 * (idx + 1); b.angle = -Math.PI/4; b.power = 0; b.isCharging = false; });
+      teamB.forEach((b, idx) => { b.partsCount = 10; b.x = 720 + 120 * (idx + 1); b.angle = -Math.PI*0.75; b.power = 0; b.isCharging = false; });
+    }
+
     function selectRps(choice) {
       window.selectedRps = choice;
       document.querySelectorAll('.rps-btn').forEach(b => b.classList.remove('selected'));
@@ -579,7 +584,6 @@ export default {
 
       const titleEl = document.getElementById('gameOverTitle');
       const subtitleEl = document.getElementById('gameOverSubtitle');
-      const scoresEl = document.getElementById('gameOverScores');
 
       if (winner === 'DRAW') {
         titleEl.innerText = '🤝 НІЧИЯ!';
@@ -592,42 +596,26 @@ export default {
         subtitleEl.innerText = 'Ваших ведмедиків знищено...';
       }
 
-      scoresEl.innerHTML =
-        '<div class="score-row team-a">' +
-          '<span class="score-label">🟦 ' + (room.teamA.username || 'Команда 1') + '</span>' +
-          '<span class="score-value">' + room.teamA.score + ' очок</span>' +
-        '</div>' +
-        '<div class="score-row team-b">' +
-          '<span class="score-label">🟥 ' + (room.teamB.username || 'Команда 2') + '</span>' +
-          '<span class="score-value">' + room.teamB.score + ' очок</span>' +
-        '</div>';
-
       document.getElementById('gameOverModal').style.display = 'flex';
     }
 
     function rematch() {
       document.getElementById('gameOverModal').style.display = 'none';
-      
-      // Скидаємо частинки ведмедиків на 10 для нової гри
-      teamA.forEach(b => b.partsCount = 10);
-      teamB.forEach(b => b.partsCount = 10);
-
-      if (window.currentRoom && window.currentRoom.mode === 'AI') {
-        startAiGame();
-      } else {
-        document.getElementById('lobbyModal').style.display = 'flex';
-      }
+      resetBears();
+      document.getElementById('lobbyModal').style.display = 'flex';
     }
 
     function backToMenu() {
       document.getElementById('gameOverModal').style.display = 'none';
       window.currentRoom = null;
       window.playerToken = null;
+      resetBears();
       if (window.pollingTimer) { clearInterval(window.pollingTimer); window.pollingTimer = null; }
       document.getElementById('lobbyModal').style.display = 'flex';
     }
 
     async function startAiGame() {
+      resetBears();
       const username = document.getElementById('usernameInput').value.trim() || "Гравець 1";
       localStorage.setItem('gummy_username', username);
 
@@ -651,6 +639,7 @@ export default {
     }
 
     async function createMultiplayerRoom() {
+      resetBears();
       const username = document.getElementById('usernameInput').value.trim() || "Гравець 1";
       localStorage.setItem('gummy_username', username);
 
@@ -674,6 +663,7 @@ export default {
     }
 
     async function joinMultiplayerRoom() {
+      resetBears();
       const username = document.getElementById('usernameInput').value.trim() || "Гравець 2";
       localStorage.setItem('gummy_username', username);
       const roomCode = document.getElementById('roomCodeInput').value.trim().toUpperCase();
@@ -723,9 +713,6 @@ export default {
       if (!window.currentRoom) return;
       window.isMyTurn = window.currentRoom.activeTeam === window.myTeam;
       const turnInfo = document.getElementById('turn-info');
-      
-      const myScore = window.myTeam === 'TEAM_A' ? window.currentRoom.teamA.score : window.currentRoom.teamB.score;
-      document.getElementById('scoreDisplay').innerText = myScore;
 
       if (window.currentRoom.status === "WAITING") {
         turnInfo.innerText = "Очікування другого гравця...";
@@ -923,7 +910,6 @@ export default {
         if (data.room) {
           window.currentRoom = data.room;
           
-          // --- ЖОРСТКА СИНХРОНІЗАЦІЯ: Змушуємо логіку спиратися на те, що бачить гравець ---
           window.currentRoom.teamA.partsLeft = teamA.reduce((acc, b) => acc + Math.max(0, b.partsCount), 0);
           window.currentRoom.teamB.partsLeft = teamB.reduce((acc, b) => acc + Math.max(0, b.partsCount), 0);
           

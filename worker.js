@@ -908,10 +908,6 @@ export default {
         const isAiShot = window.currentRoom.mode === 'AI' && ownerTeam === 'TEAM_B';
         const token = isAiShot ? 'BOT_TOKEN' : window.playerToken;
 
-        // Оновлюємо partsLeft локально, щоб гарантувати виклик фіналу
-        window.currentRoom.teamA.partsLeft = teamA.reduce((acc, b) => acc + Math.max(0, b.partsCount), 0);
-        window.currentRoom.teamB.partsLeft = teamB.reduce((acc, b) => acc + Math.max(0, b.partsCount), 0);
-
         const res = await fetch('/api/game-action', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -923,18 +919,24 @@ export default {
           })
         });
         const data = await res.json();
+        
         if (data.room) {
           window.currentRoom = data.room;
+          
+          // --- ЖОРСТКА СИНХРОНІЗАЦІЯ: Змушуємо логіку спиратися на те, що бачить гравець ---
+          // Оновлюємо ПІСЛЯ отримання даних від сервера, щоб сервер не затер нулі
+          window.currentRoom.teamA.partsLeft = teamA.reduce((acc, b) => acc + Math.max(0, b.partsCount), 0);
+          window.currentRoom.teamB.partsLeft = teamB.reduce((acc, b) => acc + Math.max(0, b.partsCount), 0);
+          
           updateTurnUI();
         }
 
-        // Гарантована перевірка та показ фінального модального вікна
+        // --- ГАРАНТОВАНА ПЕРЕВІРКА ФІНАЛУ ---
         if (window.currentRoom.teamA.partsLeft <= 0 || window.currentRoom.teamB.partsLeft <= 0 || window.currentRoom.status === "FINISHED") {
           window.currentRoom.status = "FINISHED";
           showGameOverModal(window.currentRoom);
         }
       }
-    }
 
     function draw() {
       ctx.save();

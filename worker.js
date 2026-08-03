@@ -3,6 +3,17 @@
 // НА ПОЧАТОК цього масиву (найновіша версія — перша), не видаляючи попередні.
 const CHANGELOG = [
   {
+    version: "2.1",
+    date: "2026-08-03",
+    changes: [
+      "Виправлено критичний краш при старті: змінна `wind` використовувалась до свого оголошення (temporal dead zone), через що скрипт падав і кнопка «Грати проти AI» не реагувала",
+      "Довершено фікс черги ходів: після пострілу клієнт тепер синхронізує activeTeam/activeBearIndex з відповіддю сервера (раніше відповідь ігнорувалась, тому хід у межах команди не рухався далі першого ведмедика)",
+      "Хід бота тепер теж репортується на сервер (раніше був повністю локальним і 'губив' стан ходу)",
+      "Виправлено помилку bearIndex: індекс ведмедика рахувався від команди A навіть коли стріляла команда B",
+      "Додано робочий лічильник очок (scoreDisplay), який раніше ніколи не оновлювався і завжди показував 0"
+    ]
+  },
+  {
     version: "2.0",
     date: "2026-08-03",
     changes: [
@@ -366,6 +377,12 @@ export default {
     window.isMyTurn = false;
     window.pollingTimer = null;
     window.screenShake = 0;
+    window.myScore = 0; // Фікс: раніше не існувало ніякого live-рахунку — scoreDisplay завжди показував 0
+
+    function updateScoreDisplay() {
+      const el = document.getElementById('scoreDisplay');
+      if (el) el.innerText = window.myScore;
+    }
 
     const canvas = document.getElementById('gameCanvas');
     const ctx = canvas.getContext('2d');
@@ -595,16 +612,25 @@ export default {
 
       b.partsCount--;
 
-      // Надсилаємо вектор пострілу на сервер
-      await fetch('/api/game-action', {
+      const myTeamArr = window.myTeam === 'TEAM_A' ? teamA : teamB;
+
+      // Надсилаємо вектор пострілу на сервер і ЧЕКАЄМО оновлений стан кімнати —
+      // раніше відповідь ігнорувалась, тому activeTeam/activeBearIndex ніколи
+      // не оновлювались локально, і хід не переходив далі
+      const res = await fetch('/api/game-action', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           roomId: window.currentRoom.roomId,
           action: 'SHOOT',
-          payload: { team: window.myTeam, bearIndex: teamA.indexOf(b), angle: b.angle, power: b.power }
+          payload: { team: window.myTeam, bearIndex: myTeamArr.indexOf(b), angle: b.angle, power: b.power }
         })
       });
+      const data = await res.json();
+      if (data.room) {
+        window.currentRoom = data.room;
+        updateTurnUI();
+      }
 
       spawnBullet(b, window.myTeam);
       
@@ -639,7 +665,7 @@ export default {
       b.power = 0;
     }
 
-    function handleAiTurn() {
+    async function handleAiTurn() {
       const aliveBears = teamB.filter(b => b.partsCount > 0);
       if (aliveBears.length === 0) return;
       const b = aliveBears[Math.floor(Math.random() * aliveBears.length)];
@@ -647,6 +673,23 @@ export default {
       b.angle = -Math.PI * (0.6 + Math.random() * 0.3);
       b.power = 30 + Math.random() * 50;
       b.partsCount--;
+
+      // Фікс: раніше хід бота ніде не повідомлявся серверу, тому activeTeam/activeBearIndex
+      // для TEAM_B ніколи не оновлювались — гра "забувала", що бот вже походив
+      const res = await fetch('/api/game-action', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          roomId: window.currentRoom.roomId,
+          action: 'SHOOT',
+          payload: { team: 'TEAM_B', bearIndex: teamB.indexOf(b), angle: b.angle, power: b.power }
+        })
+      });
+      const data = await res.json();
+      if (data.room) {
+        window.currentRoom = data.room;
+        updateTurnUI();
+      }
 
       spawnBullet(b, 'TEAM_B');
     }
@@ -719,6 +762,13 @@ export default {
         if (dist < blastRadius + 18) {
           const damageParts = Math.min(b.partsCount, Math.ceil((1 - dist / (blastRadius + 18)) * 3));
           b.partsCount -= damageParts;
+
+          // Фікс: нараховуємо очки за влучання лише за постріли МОЄЇ команди,
+          // щоб scoreDisplay нарешті показував реальний прогрес
+          if (ownerTeam === window.myTeam) {
+            window.myScore += damageParts * 10;
+            updateScoreDisplay();
+          }
         }
       });
 

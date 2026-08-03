@@ -66,4 +66,5 @@ npx wrangler deploy
 
 ## 📄 Ліцензія
 
-MIT License © 2026 [Roman Rozumei](https://github.com/rozumeyroman)
+GNU General Public License v3.0 (GPLv3) © 2026 [Roman Rozumei](https://github.com/rozumeyroman)
+

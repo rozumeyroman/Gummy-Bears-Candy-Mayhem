@@ -1,11 +1,5 @@
 {
   "name": "gummy-bears-candy-mayhem",
   "main": "worker.js",
-  "compatibility_date": "2026-07-31",
-  "kv_namespaces": [
-    {
-      "binding": "LEADERBOARD",
-      "id": "dfeaf9148b3b4ff8852e310fd1018850"
-    }
-  ]
+  "compatibility_date": "2026-08-03"
 }

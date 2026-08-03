@@ -924,7 +924,6 @@ export default {
           window.currentRoom = data.room;
           
           // --- ЖОРСТКА СИНХРОНІЗАЦІЯ: Змушуємо логіку спиратися на те, що бачить гравець ---
-          // Оновлюємо ПІСЛЯ отримання даних від сервера, щоб сервер не затер нулі
           window.currentRoom.teamA.partsLeft = teamA.reduce((acc, b) => acc + Math.max(0, b.partsCount), 0);
           window.currentRoom.teamB.partsLeft = teamB.reduce((acc, b) => acc + Math.max(0, b.partsCount), 0);
           
@@ -937,6 +936,7 @@ export default {
           showGameOverModal(window.currentRoom);
         }
       }
+    }
 
     function draw() {
       ctx.save();

@@ -727,6 +727,7 @@ export default {
     let bullet = null;
     let resolvingExplosion = false;
     let pollingInFlight = false;
+    let aiMoving = false;
     const keys = {};
 
     window.addEventListener('DOMContentLoaded', () => {
@@ -739,6 +740,7 @@ export default {
     function resetBears() {
       bullet = null;
       resolvingExplosion = false;
+      aiMoving = false;
       teamA.forEach((b, idx) => { b.partsCount = 10; b.x = 120 * (idx + 1); b.angle = -Math.PI/4; b.power = 0; b.isCharging = false; });
       teamB.forEach((b, idx) => { b.partsCount = 10; b.x = 720 + 120 * (idx + 1); b.angle = -Math.PI*0.75; b.power = 0; b.isCharging = false; });
     }
@@ -1030,30 +1032,86 @@ export default {
       b.power = 0;
     }
 
+    function chooseAiMoveTarget(bear) {
+      const minX = 50;
+      const maxX = canvas.width - 50;
+      const x = Math.round(bear.x);
+      const lookAhead = 70;
+      const groundAt = (position) => terrain[Math.max(0, Math.min(canvas.width - 1, Math.round(position)))];
+      const currentGround = groundAt(x);
+      const leftGround = groundAt(x - lookAhead);
+      const rightGround = groundAt(x + lookAhead);
+      let direction;
+
+      // Біля краю або на дні вирви бот обирає напрямок до безпечнішої ділянки.
+      if (bear.x < 120) direction = 1;
+      else if (bear.x > canvas.width - 120) direction = -1;
+      else if (currentGround > Math.min(leftGround, rightGround) + 25) direction = leftGround <= rightGround ? -1 : 1;
+      else direction = Math.random() < 0.5 ? -1 : 1;
+
+      const distance = 20 + Math.random() * 60;
+      return Math.max(minX, Math.min(maxX, bear.x + direction * distance));
+    }
+
+    function animateAiMovement(bear, targetX) {
+      return new Promise(resolve => {
+        // За втрати обох ніг бот не може маневрувати.
+        if (bear.partsCount <= 8 || Math.abs(targetX - bear.x) < 1) {
+          resolve();
+          return;
+        }
+
+        const speed = bear.partsCount <= 9 ? 0.9 : 1.8;
+        const direction = targetX > bear.x ? 1 : -1;
+        function step() {
+          const distanceLeft = Math.abs(targetX - bear.x);
+          if (distanceLeft <= speed) {
+            bear.x = targetX;
+            updateY(bear);
+            resolve();
+            return;
+          }
+          bear.x += direction * speed;
+          updateY(bear);
+          requestAnimationFrame(step);
+        }
+        step();
+      });
+    }
+
     async function handleAiTurn() {
-      if (!window.currentRoom || window.currentRoom.mode !== 'AI' || window.currentRoom.status !== 'PLAYING' || window.currentRoom.activeTeam !== 'TEAM_B' || window.currentRoom.pendingShot || bullet || resolvingExplosion) return;
+      if (!window.currentRoom || window.currentRoom.mode !== 'AI' || window.currentRoom.status !== 'PLAYING' || window.currentRoom.activeTeam !== 'TEAM_B' || window.currentRoom.pendingShot || bullet || resolvingExplosion || aiMoving) return;
       const b = getActiveBear();
       if (!b || b.partsCount <= 0) return;
-      
-      b.angle = -Math.PI * (0.6 + Math.random() * 0.3);
-      b.power = 30 + Math.random() * 50;
+      aiMoving = true;
+      updateTurnUI();
+      try {
+        await animateAiMovement(b, chooseAiMoveTarget(b));
+        if (!window.currentRoom || window.currentRoom.status !== 'PLAYING' || window.currentRoom.activeTeam !== 'TEAM_B' || window.currentRoom.pendingShot) return;
 
-      const res = await fetch('/api/game-action', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          roomId: window.currentRoom.roomId,
-          playerToken: "BOT_TOKEN",
-          action: 'SHOOT',
-          payload: { bearIndex: teamB.indexOf(b), angle: b.angle, power: b.power }
-        })
-      });
-      const data = await res.json();
-      if (!res.ok || !data.room) return;
-      applyServerRoom(data.room);
-      if (data.room.status === 'FINISHED') return;
+        b.angle = -Math.PI * (0.6 + Math.random() * 0.3);
+        b.power = 30 + Math.random() * 50;
 
-      spawnBullet(b, 'TEAM_B');
+        const res = await fetch('/api/game-action', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            roomId: window.currentRoom.roomId,
+            playerToken: "BOT_TOKEN",
+            action: 'SHOOT',
+            payload: { bearIndex: teamB.indexOf(b), angle: b.angle, power: b.power }
+          })
+        });
+        const data = await res.json();
+        if (!res.ok || !data.room) return;
+        applyServerRoom(data.room);
+        if (data.room.status === 'FINISHED') return;
+
+        spawnBullet(b, 'TEAM_B');
+      } finally {
+        aiMoving = false;
+        updateTurnUI();
+      }
     }
 
     function updateY(b) {

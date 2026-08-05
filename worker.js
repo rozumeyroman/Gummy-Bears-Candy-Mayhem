@@ -78,6 +78,63 @@ function renderChangelogHtml(sanitize) {
 
 // --- ВНУТРІШНЄ СХОВИЩЕ КІМНАТ В ОПЕРАТИВНІЙ ПАМ'ЯТІ (RAM) ---
 const activeRooms = new Map();
+const TURNSTILE_SESSION_COOKIE = "gummy_turnstile_session";
+const TURNSTILE_SESSION_TTL_SECONDS = 60 * 60;
+
+function base64UrlEncode(bytes) {
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function base64UrlDecode(value) {
+  const padded = value.replace(/-/g, "+").replace(/_/g, "/") + "=".repeat((4 - value.length % 4) % 4);
+  const binary = atob(padded);
+  return Uint8Array.from(binary, char => char.charCodeAt(0));
+}
+
+function getCookie(request, name) {
+  const cookieHeader = request.headers.get("Cookie") || "";
+  const cookie = cookieHeader.split(";").map(value => value.trim()).find(value => value.startsWith(`${name}=`));
+  return cookie ? cookie.slice(name.length + 1) : null;
+}
+
+async function getTurnstileSessionKey(secret) {
+  return crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign", "verify"]
+  );
+}
+
+async function createTurnstileSession(secret) {
+  const expiresAt = Math.floor(Date.now() / 1000) + TURNSTILE_SESSION_TTL_SECONDS;
+  const payload = `v1.${expiresAt}`;
+  const key = await getTurnstileSessionKey(secret);
+  const signature = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(payload));
+  return `${payload}.${base64UrlEncode(new Uint8Array(signature))}`;
+}
+
+async function hasValidTurnstileSession(request, secret) {
+  const session = getCookie(request, TURNSTILE_SESSION_COOKIE);
+  if (!session || !secret) return false;
+
+  const [version, expiresAtText, signature] = session.split(".");
+  const expiresAt = Number(expiresAtText);
+  if (version !== "v1" || !Number.isSafeInteger(expiresAt) || expiresAt <= Math.floor(Date.now() / 1000) || !signature) {
+    return false;
+  }
+
+  const payload = `${version}.${expiresAt}`;
+  try {
+    const key = await getTurnstileSessionKey(secret);
+    return crypto.subtle.verify("HMAC", key, base64UrlDecode(signature), new TextEncoder().encode(payload));
+  } catch {
+    return false;
+  }
+}
 
 function cleanExpiredRooms() {
   const now = Date.now();
@@ -128,6 +185,61 @@ export default {
         return { winner: 'TEAM_A', isTie: false };
       }
       return { winner: 'TEAM_B', isTie: false };
+    }
+
+    // Turnstile token-и одноразові, тому обмінюємо їх на короткоживучу підписану cookie.
+    if (url.pathname === "/api/verify-turnstile" && request.method === "POST") {
+      if (!env.TURNSTILE_SECRET_KEY) {
+        return new Response(JSON.stringify({ error: "Turnstile secret is not configured" }), { status: 500, headers: { "Content-Type": "application/json" } });
+      }
+
+      try {
+        const { token } = await request.json();
+        if (typeof token !== "string" || !token) {
+          return new Response(JSON.stringify({ error: "Turnstile token is required" }), { status: 400, headers: { "Content-Type": "application/json" } });
+        }
+
+        const verification = await fetch("https://challenges.cloudflare.com/turnstile/v0/siteverify", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            secret: env.TURNSTILE_SECRET_KEY,
+            response: token,
+            remoteip: request.headers.get("CF-Connecting-IP") || undefined
+          })
+        });
+        const outcome = await verification.json();
+        if (!outcome.success) {
+          return new Response(JSON.stringify({ error: "Turnstile verification failed" }), { status: 403, headers: { "Content-Type": "application/json" } });
+        }
+
+        const session = await createTurnstileSession(env.TURNSTILE_SECRET_KEY);
+        return new Response(JSON.stringify({ success: true }), {
+          headers: {
+            "Content-Type": "application/json",
+            "Cache-Control": "no-store",
+            "Set-Cookie": `${TURNSTILE_SESSION_COOKIE}=${session}; Max-Age=${TURNSTILE_SESSION_TTL_SECONDS}; Path=/; HttpOnly; Secure; SameSite=Strict`
+          }
+        });
+      } catch {
+        return new Response(JSON.stringify({ error: "Invalid Turnstile verification request" }), { status: 400, headers: { "Content-Type": "application/json" } });
+      }
+    }
+
+    // Lets the page reuse an unexpired HttpOnly session after a refresh without exposing its value.
+    if (url.pathname === "/api/turnstile-status" && request.method === "GET") {
+      const verified = await hasValidTurnstileSession(request, env.TURNSTILE_SECRET_KEY);
+      return new Response(JSON.stringify({ verified }), {
+        headers: { "Content-Type": "application/json", "Cache-Control": "no-store" }
+      });
+    }
+
+    // All game endpoints require a successfully completed Turnstile challenge.
+    if (url.pathname.startsWith("/api/") && !(await hasValidTurnstileSession(request, env.TURNSTILE_SECRET_KEY))) {
+      return new Response(JSON.stringify({ error: "Turnstile verification required" }), {
+        status: 403,
+        headers: { "Content-Type": "application/json", "Cache-Control": "no-store" }
+      });
     }
 
     // --- API: Створити кімнату ---
@@ -311,6 +423,7 @@ export default {
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@400;600;700&display=swap" rel="stylesheet">
+  <script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
   <style>
     * { box-sizing: border-box; }
     body { font-family: 'Fredoka', cursive, system-ui, sans-serif; background: #1a0b2e; color: white; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; margin: 0; padding: 15px; overflow-x: hidden; }
@@ -363,6 +476,8 @@ export default {
       <h2>🍬 Gummy Bears 3v3</h2>
       <p style="font-size: 14px; color: #ddd;">Нікнейм зберігається автоматично:</p>
       <input type="text" id="usernameInput" placeholder="Гравець 1" maxlength="12" autocomplete="off" data-1p-ignore>
+      <div class="cf-turnstile" data-sitekey="0x4AAAAAAEHTYEicsQxe9QLA" data-callback="handleTurnstileSuccess"></div>
+      <p id="turnstileStatus" style="font-size:13px; color:#ffbe0b; margin:0 0 8px;">Підтвердіть, що ви людина, щоб почати гру.</p>
       
       <div class="rps-selector">
         <button class="rps-btn selected" onclick="selectRps('rock')" id="rps-rock">🪨</button>
@@ -434,10 +549,55 @@ export default {
     window.currentRoom = null;
     window.playerToken = null;
     window.selectedRps = 'rock';
+    window.turnstileVerified = false;
     window.myTeam = 'TEAM_A';
     window.isMyTurn = false;
     window.pollingTimer = null;
     window.screenShake = 0;
+
+    window.handleTurnstileSuccess = async function(token) {
+      const status = document.getElementById('turnstileStatus');
+      status.innerText = 'Перевіряємо…';
+      status.style.color = '#ffbe0b';
+      try {
+        const response = await fetch('/api/verify-turnstile', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'same-origin',
+          body: JSON.stringify({ token: token })
+        });
+        const result = await response.json();
+        if (!response.ok || !result.success) throw new Error(result.error || 'Verification failed');
+        window.turnstileVerified = true;
+        status.innerText = '✓ Перевірку пройдено — можна грати!';
+        status.style.color = '#4ecca3';
+      } catch (error) {
+        window.turnstileVerified = false;
+        status.innerText = 'Не вдалося підтвердити перевірку. Спробуйте ще раз.';
+        status.style.color = '#ff758f';
+        if (window.turnstile) window.turnstile.reset();
+      }
+    };
+
+    function requireTurnstile() {
+      if (window.turnstileVerified) return true;
+      alert('Спочатку пройдіть перевірку Turnstile.');
+      return false;
+    }
+
+    async function restoreTurnstileSession() {
+      try {
+        const response = await fetch('/api/turnstile-status', { credentials: 'same-origin' });
+        const result = await response.json();
+        if (!result.verified) return;
+        window.turnstileVerified = true;
+        const status = document.getElementById('turnstileStatus');
+        status.innerText = '✓ Перевірку вже пройдено — можна грати!';
+        status.style.color = '#4ecca3';
+      } catch (error) {}
+    }
+
+    restoreTurnstileSession();
 
     const canvas = document.getElementById('gameCanvas');
     const ctx = canvas.getContext('2d');
@@ -615,6 +775,7 @@ export default {
     }
 
     async function startAiGame() {
+      if (!requireTurnstile()) return;
       resetBears();
       const username = document.getElementById('usernameInput').value.trim() || "Гравець 1";
       localStorage.setItem('gummy_username', username);
@@ -639,6 +800,7 @@ export default {
     }
 
     async function createMultiplayerRoom() {
+      if (!requireTurnstile()) return;
       resetBears();
       const username = document.getElementById('usernameInput').value.trim() || "Гравець 1";
       localStorage.setItem('gummy_username', username);
@@ -663,6 +825,7 @@ export default {
     }
 
     async function joinMultiplayerRoom() {
+      if (!requireTurnstile()) return;
       resetBears();
       const username = document.getElementById('usernameInput').value.trim() || "Гравець 2";
       localStorage.setItem('gummy_username', username);

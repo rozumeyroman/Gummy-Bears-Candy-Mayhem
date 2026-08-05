@@ -1,6 +1,16 @@
 // --- ІСТОРІЯ ВЕРСІЙ ---
 const CHANGELOG = [
   {
+    version: "2.6",
+    date: "2026-08-05",
+    changes: [
+      "Виправлено: Ротація ходів тепер переходить до наступного живого ведмедика (1 → 2 → 3 → 1)",
+      "Виправлено: Сервер синхронізує окремий запас частин кожного ведмедика та коректно завершує матч",
+      "Виправлено: Фінальне вікно гарантовано відкривається після знищення останнього ведмедика",
+      "Стабільність: Заблоковано дублювання шкоди, постріли під час анімації та паралельні запити поллінгу"
+    ]
+  },
+  {
     version: "2.5",
     date: "2026-08-03",
     changes: [
@@ -187,6 +197,18 @@ export default {
       return { winner: 'TEAM_B', isTie: false };
     }
 
+    function nextAliveBearIndex(bearParts, currentIndex) {
+      for (let offset = 1; offset <= bearParts.length; offset++) {
+        const index = (currentIndex + offset) % bearParts.length;
+        if (bearParts[index] > 0) return index;
+      }
+      return 0;
+    }
+
+    function syncTeamParts(team) {
+      team.partsLeft = team.bearParts.reduce((total, parts) => total + parts, 0);
+    }
+
     // Turnstile token-и одноразові, тому обмінюємо їх на короткоживучу підписану cookie.
     if (url.pathname === "/api/verify-turnstile" && request.method === "POST") {
       if (!env.TURNSTILE_SECRET_KEY) {
@@ -269,10 +291,11 @@ export default {
           roomId,
           mode,
           status: mode === "AI" ? "PLAYING" : "WAITING",
-          teamA: { username, rpsChoice, score: 0, token: hostToken, partsLeft: 30 },
-          teamB: { username: mode === "AI" ? "Бот 🤖" : null, rpsChoice: aiRpsChoice, score: 0, token: mode === "AI" ? "BOT_TOKEN" : null, partsLeft: 30 },
+          teamA: { username, rpsChoice, score: 0, token: hostToken, bearParts: [10, 10, 10], partsLeft: 30 },
+          teamB: { username: mode === "AI" ? "Бот 🤖" : null, rpsChoice: aiRpsChoice, score: 0, token: mode === "AI" ? "BOT_TOKEN" : null, bearParts: [10, 10, 10], partsLeft: 30 },
           activeTeam: firstTurn,
           activeBearIndex: { TEAM_A: 0, TEAM_B: 0 },
+          pendingShot: null,
           rpsResult: { isTie: isRpsTie, winner: firstTurn },
           lastAction: null,
           createdAt: Date.now()
@@ -368,32 +391,61 @@ export default {
         const actingTeam = isTeamA ? "TEAM_A" : "TEAM_B";
 
         if (action === "SHOOT") {
+          if (room.status !== "PLAYING") {
+            return new Response(JSON.stringify({ error: "Матч уже завершено або він ще не почався" }), { status: 409 });
+          }
+          if (room.pendingShot) {
+            return new Response(JSON.stringify({ error: "Дочекайтеся завершення попереднього пострілу" }), { status: 409 });
+          }
           if (room.activeTeam !== actingTeam) {
             return new Response(JSON.stringify({ error: "Зараз хід супротивника!" }), { status: 400 });
+          }
+
+          const actingState = actingTeam === "TEAM_A" ? room.teamA : room.teamB;
+          const bearIndex = Number(payload?.bearIndex);
+          if (!Number.isInteger(bearIndex) || bearIndex !== room.activeBearIndex[actingTeam] || actingState.bearParts[bearIndex] <= 0) {
+            return new Response(JSON.stringify({ error: "Недійсний активний ведмедик" }), { status: 400 });
           }
 
           room.lastAction = {
             type: "SHOOT",
             team: actingTeam,
-            bearIndex: payload.bearIndex,
+            bearIndex,
             angle: payload.angle,
             power: payload.power,
             timestamp: Date.now()
           };
 
-          const currentIdx = room.activeBearIndex[actingTeam];
-          room.activeBearIndex[actingTeam] = (currentIdx + 1) % 3;
+          actingState.bearParts[bearIndex]--;
+          syncTeamParts(actingState);
+          room.activeBearIndex[actingTeam] = nextAliveBearIndex(actingState.bearParts, bearIndex);
           room.activeTeam = actingTeam === "TEAM_A" ? "TEAM_B" : "TEAM_A";
-
-          if (actingTeam === "TEAM_A") {
-            room.teamA.partsLeft = Math.max(0, room.teamA.partsLeft - 1);
-          } else {
-            room.teamB.partsLeft = Math.max(0, room.teamB.partsLeft - 1);
-          }
+          room.pendingShot = { id: crypto.randomUUID(), team: actingTeam, timestamp: room.lastAction.timestamp };
 
           if (room.teamA.partsLeft <= 0 || room.teamB.partsLeft <= 0) {
             room.status = "FINISHED";
+            room.pendingShot = null;
           }
+        } else if (action === "REPORT_DAMAGE") {
+          const targetTeam = actingTeam === "TEAM_A" ? "TEAM_B" : "TEAM_A";
+          const targetState = targetTeam === "TEAM_A" ? room.teamA : room.teamB;
+          const damageByBear = payload?.damageByBear;
+          if (!room.pendingShot || room.pendingShot.team !== actingTeam || payload?.shotId !== room.pendingShot.id || !Array.isArray(damageByBear) || damageByBear.length !== 3) {
+            return new Response(JSON.stringify({ error: "Недійсний звіт про влучання" }), { status: 400 });
+          }
+          if (!damageByBear.every(damage => Number.isInteger(damage) && damage >= 0 && damage <= 3)) {
+            return new Response(JSON.stringify({ error: "Некоректна шкода" }), { status: 400 });
+          }
+
+          targetState.bearParts = targetState.bearParts.map((parts, index) => Math.max(0, parts - damageByBear[index]));
+          syncTeamParts(targetState);
+          if (targetState.bearParts[room.activeBearIndex[targetTeam]] <= 0 && targetState.partsLeft > 0) {
+            room.activeBearIndex[targetTeam] = nextAliveBearIndex(targetState.bearParts, room.activeBearIndex[targetTeam]);
+          }
+          room.pendingShot = null;
+          if (targetState.partsLeft <= 0) room.status = "FINISHED";
+        } else {
+          return new Response(JSON.stringify({ error: "Невідома ігрова дія" }), { status: 400 });
         }
 
         activeRooms.set(roomId, room);
@@ -673,6 +725,8 @@ export default {
     ];
 
     let bullet = null;
+    let resolvingExplosion = false;
+    let pollingInFlight = false;
     const keys = {};
 
     window.addEventListener('DOMContentLoaded', () => {
@@ -683,8 +737,18 @@ export default {
     });
 
     function resetBears() {
+      bullet = null;
+      resolvingExplosion = false;
       teamA.forEach((b, idx) => { b.partsCount = 10; b.x = 120 * (idx + 1); b.angle = -Math.PI/4; b.power = 0; b.isCharging = false; });
       teamB.forEach((b, idx) => { b.partsCount = 10; b.x = 720 + 120 * (idx + 1); b.angle = -Math.PI*0.75; b.power = 0; b.isCharging = false; });
+    }
+
+    function applyServerRoom(room) {
+      window.currentRoom = room;
+      if (Array.isArray(room.teamA.bearParts)) room.teamA.bearParts.forEach((parts, index) => { teamA[index].partsCount = parts; });
+      if (Array.isArray(room.teamB.bearParts)) room.teamB.bearParts.forEach((parts, index) => { teamB[index].partsCount = parts; });
+      updateTurnUI();
+      if (room.status === 'FINISHED') showGameOverModal(room);
     }
 
     function selectRps(choice) {
@@ -761,6 +825,9 @@ export default {
 
     function rematch() {
       document.getElementById('gameOverModal').style.display = 'none';
+      if (window.pollingTimer) { clearInterval(window.pollingTimer); window.pollingTimer = null; }
+      window.currentRoom = null;
+      window.playerToken = null;
       resetBears();
       document.getElementById('lobbyModal').style.display = 'flex';
     }
@@ -786,10 +853,11 @@ export default {
         body: JSON.stringify({ username, mode: 'AI', rpsChoice: window.selectedRps })
       });
       const data = await res.json();
-      window.currentRoom = data.roomState;
+      applyServerRoom(data.roomState);
       window.playerToken = data.playerToken;
       window.myTeam = 'TEAM_A';
       generateTerrain(data.roomId);
+      updateTurnUI();
 
       document.getElementById('teamAName').innerText = username;
       document.getElementById('teamBName').innerText = "Бот 🤖";
@@ -811,10 +879,11 @@ export default {
         body: JSON.stringify({ username, mode: 'MULTIPLAYER', rpsChoice: window.selectedRps })
       });
       const data = await res.json();
-      window.currentRoom = data.roomState;
+      applyServerRoom(data.roomState);
       window.playerToken = data.playerToken;
       window.myTeam = 'TEAM_A';
       generateTerrain(data.roomId);
+      updateTurnUI();
 
       alert('Кімнату створено! Поділіться кодом з другом: ' + data.roomId);
       document.getElementById('teamAName').innerText = username;
@@ -840,10 +909,11 @@ export default {
       const data = await res.json();
       if (data.error) { alert(data.error); return; }
 
-      window.currentRoom = data.roomState;
+      applyServerRoom(data.roomState);
       window.playerToken = data.playerToken;
       window.myTeam = 'TEAM_B';
       generateTerrain(data.roomState.roomId);
+      updateTurnUI();
 
       document.getElementById('teamAName').innerText = data.roomState.teamA.username;
       document.getElementById('teamBName').innerText = username;
@@ -856,29 +926,37 @@ export default {
     function startPolling() {
       if (window.pollingTimer) clearInterval(window.pollingTimer);
       window.pollingTimer = setInterval(async () => {
-        if (!window.currentRoom) return;
+        if (!window.currentRoom || pollingInFlight) return;
+        pollingInFlight = true;
         try {
           const res = await fetch('/api/room-state?roomId=' + window.currentRoom.roomId);
           const roomState = await res.json();
+          if (!res.ok) return;
           
           if (roomState.lastAction && (!window.currentRoom.lastAction || roomState.lastAction.timestamp > window.currentRoom.lastAction.timestamp)) {
             if (roomState.lastAction.type === 'SHOOT' && roomState.lastAction.team !== window.myTeam) {
               executeRemoteShoot(roomState.lastAction);
             }
           }
-          window.currentRoom = roomState;
-          updateTurnUI();
-        } catch(e){}
+          applyServerRoom(roomState);
+        } catch(e) {
+        } finally {
+          pollingInFlight = false;
+        }
       }, 1500);
     }
 
     function updateTurnUI() {
       if (!window.currentRoom) return;
-      window.isMyTurn = window.currentRoom.activeTeam === window.myTeam;
+      window.isMyTurn = window.currentRoom.status === 'PLAYING' && window.currentRoom.activeTeam === window.myTeam && !window.currentRoom.pendingShot && !bullet && !resolvingExplosion;
       const turnInfo = document.getElementById('turn-info');
 
       if (window.currentRoom.status === "WAITING") {
         turnInfo.innerText = "Очікування другого гравця...";
+      } else if (window.currentRoom.status === "FINISHED") {
+        turnInfo.innerText = "Матч завершено";
+      } else if (window.currentRoom.pendingShot || bullet || resolvingExplosion) {
+        turnInfo.innerText = "Постріл у польоті...";
       } else if (window.isMyTurn) {
         turnInfo.innerText = "Хід: Ваш хід! 🟩";
       } else {
@@ -895,7 +973,7 @@ export default {
         const bearIndex = (idx + i) % team.length;
         if (team[bearIndex].partsCount > 0) return team[bearIndex];
       }
-      return team[0];
+      return null;
     }
 
     window.addEventListener('keydown', e => keys[e.code] = true);
@@ -907,9 +985,8 @@ export default {
 
     async function handlePlayerShoot(b) {
       b.isCharging = false;
-      if (b.partsCount <= 0 || bullet) return;
+      if (b.partsCount <= 0 || bullet || resolvingExplosion || !window.isMyTurn) return;
 
-      b.partsCount--;
       const myTeamArr = window.myTeam === 'TEAM_A' ? teamA : teamB;
 
       const res = await fetch('/api/game-action', {
@@ -923,16 +1000,11 @@ export default {
         })
       });
       const data = await res.json();
-      if (data.room) {
-        window.currentRoom = data.room;
-        updateTurnUI();
-      }
+      if (!res.ok || !data.room) return;
+      applyServerRoom(data.room);
+      if (data.room.status === 'FINISHED') return;
 
       spawnBullet(b, window.myTeam);
-      
-      if (window.currentRoom.mode === 'AI' && window.currentRoom.status === 'PLAYING') {
-        setTimeout(handleAiTurn, 2500);
-      }
     }
 
     function executeRemoteShoot(actionData) {
@@ -940,7 +1012,6 @@ export default {
       const b = enemyTeam[actionData.bearIndex] || enemyTeam[0];
       b.angle = actionData.angle;
       b.power = actionData.power;
-      b.partsCount = Math.max(0, b.partsCount - 1);
       spawnBullet(b, actionData.team);
     }
 
@@ -960,13 +1031,12 @@ export default {
     }
 
     async function handleAiTurn() {
-      const aliveBears = teamB.filter(b => b.partsCount > 0);
-      if (aliveBears.length === 0) return;
-      const b = aliveBears[Math.floor(Math.random() * aliveBears.length)];
+      if (!window.currentRoom || window.currentRoom.mode !== 'AI' || window.currentRoom.status !== 'PLAYING' || window.currentRoom.activeTeam !== 'TEAM_B' || window.currentRoom.pendingShot || bullet || resolvingExplosion) return;
+      const b = getActiveBear();
+      if (!b || b.partsCount <= 0) return;
       
       b.angle = -Math.PI * (0.6 + Math.random() * 0.3);
       b.power = 30 + Math.random() * 50;
-      b.partsCount--;
 
       const res = await fetch('/api/game-action', {
         method: 'POST',
@@ -979,10 +1049,9 @@ export default {
         })
       });
       const data = await res.json();
-      if (data.room) {
-        window.currentRoom = data.room;
-        updateTurnUI();
-      }
+      if (!res.ok || !data.room) return;
+      applyServerRoom(data.room);
+      if (data.room.status === 'FINISHED') return;
 
       spawnBullet(b, 'TEAM_B');
     }
@@ -1031,6 +1100,8 @@ export default {
     }
 
     async function explode(ex, ey, ownerTeam) {
+      if (resolvingExplosion) return;
+      resolvingExplosion = true;
       const blastRadius = 30;
       window.screenShake = 12;
       createExplosionParticles(ex, ey, ownerTeam === 'TEAM_A' ? '#52b788' : '#ff4d6d');
@@ -1042,22 +1113,25 @@ export default {
       }
 
       const targetTeam = ownerTeam === 'TEAM_A' ? teamB : teamA;
-      let totalDamageParts = 0;
+      const damageByBear = [0, 0, 0];
 
-      targetTeam.forEach(b => {
+      targetTeam.forEach((b, index) => {
         if (b.partsCount <= 0) return;
         const dist = Math.hypot(b.x - ex, b.y - ey);
         if (dist < blastRadius + 18) {
           const damageParts = Math.min(b.partsCount, Math.ceil((1 - dist / (blastRadius + 18)) * 3));
           b.partsCount -= damageParts;
-          totalDamageParts += damageParts;
+          damageByBear[index] = damageParts;
         }
       });
 
-      if (totalDamageParts > 0) {
-        const isAiShot = window.currentRoom.mode === 'AI' && ownerTeam === 'TEAM_B';
+      // Лише клієнт, який виконав постріл, фіксує його результат на сервері.
+      // Це не дозволяє обом клієнтам мультиплеєра застосувати ту саму шкоду двічі.
+      const isAiShot = window.currentRoom.mode === 'AI' && ownerTeam === 'TEAM_B';
+      const isLocalShot = ownerTeam === window.myTeam || isAiShot;
+      if (isLocalShot) {
         const token = isAiShot ? 'BOT_TOKEN' : window.playerToken;
-
+        try {
         const res = await fetch('/api/game-action', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -1065,25 +1139,21 @@ export default {
             roomId: window.currentRoom.roomId,
             playerToken: token,
             action: 'REPORT_DAMAGE',
-            payload: { damageParts: totalDamageParts }
+            payload: { shotId: window.currentRoom.pendingShot.id, damageByBear: damageByBear }
           })
         });
         const data = await res.json();
         
-        if (data.room) {
-          window.currentRoom = data.room;
-          
-          window.currentRoom.teamA.partsLeft = teamA.reduce((acc, b) => acc + Math.max(0, b.partsCount), 0);
-          window.currentRoom.teamB.partsLeft = teamB.reduce((acc, b) => acc + Math.max(0, b.partsCount), 0);
-          
-          updateTurnUI();
+        if (res.ok && data.room) applyServerRoom(data.room);
+        } catch (error) {
+          // Наступний polling синхронізує стан, якщо мережа тимчасово недоступна.
         }
+      }
+      resolvingExplosion = false;
+      updateTurnUI();
 
-        // --- ГАРАНТОВАНА ПЕРЕВІРКА ФІНАЛУ ---
-        if (window.currentRoom.teamA.partsLeft <= 0 || window.currentRoom.teamB.partsLeft <= 0 || window.currentRoom.status === "FINISHED") {
-          window.currentRoom.status = "FINISHED";
-          showGameOverModal(window.currentRoom);
-        }
+      if (window.currentRoom && window.currentRoom.mode === 'AI' && window.currentRoom.status === 'PLAYING' && window.currentRoom.activeTeam === 'TEAM_B' && !window.currentRoom.pendingShot) {
+        setTimeout(handleAiTurn, 700);
       }
     }
 

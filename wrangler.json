@@ -1,5 +1,5 @@
 {
   "name": "gummy-bears-candy-mayhem",
-  "main": "worker.js",
+  "main": "src/index.js",
   "compatibility_date": "2026-08-03"
 }

@@ -253,6 +253,23 @@ export async function handleApiRoutes(request, env, url) {
                 }
                 room.pendingShot = null;
                 if (targetState.partsLeft <= 0) room.status = "FINISHED";
+            } else if (action === "REPORT_FALL") {
+                if (room.status !== "PLAYING") {
+                    return new Response(JSON.stringify({ error: "Матч уже завершено або він ще не почався" }), { status: 409 });
+                }
+
+                const actingState = actingTeam === "TEAM_A" ? room.teamA : room.teamB;
+                const bearIndex = Number(payload?.bearIndex);
+                if (!Number.isInteger(bearIndex) || bearIndex < 0 || bearIndex >= actingState.bearParts.length || actingState.bearParts[bearIndex] <= 0) {
+                    return new Response(JSON.stringify({ error: "Недійсний ведмедик для падіння" }), { status: 400 });
+                }
+
+                actingState.bearParts[bearIndex] = 0;
+                syncTeamParts(actingState);
+                if (actingState.partsLeft > 0 && room.activeBearIndex[actingTeam] === bearIndex) {
+                    room.activeBearIndex[actingTeam] = nextAliveBearIndex(actingState.bearParts, bearIndex);
+                }
+                if (actingState.partsLeft <= 0) room.status = "FINISHED";
             } else {
                 return new Response(JSON.stringify({ error: "Невідома ігрова дія" }), { status: 400 });
             }

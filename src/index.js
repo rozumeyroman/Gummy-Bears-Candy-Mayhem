@@ -13,7 +13,15 @@ export default {
             return apiResponse;
         }
 
-        // 2. Рендеринг фронтенд-сторінки для звичайних GET запитів
+        // 2. Статичні фронтенд-ресурси з Cloudflare Static Assets
+        if (request.method === "GET") {
+            const assetResponse = await env.ASSETS.fetch(request);
+            if (assetResponse.status !== 404) {
+                return assetResponse;
+            }
+        }
+
+        // 3. Рендеринг фронтенд-сторінки для звичайних GET запитів
         if (request.method === "GET") {
             const html = renderHTML();
             return new Response(html, {

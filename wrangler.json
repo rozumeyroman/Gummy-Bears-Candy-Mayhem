@@ -1,5 +1,6 @@
 {
   "name": "gummy-bears-candy-mayhem",
   "main": "src/index.js",
-  "compatibility_date": "2026-08-03"
+  "compatibility_date": "2026-08-03",
+  "assets": { "directory": "./src/public" }
 }

@@ -7,22 +7,14 @@ export default {
     async fetch(request, env) {
         const url = new URL(request.url);
 
-        // 1. Спроба обробити API-маршрут (/api/*)
+        // 1. Обробити API-маршрути (/api/*)
         const apiResponse = await handleApiRoutes(request, env, url);
         if (apiResponse) {
             return apiResponse;
         }
 
-        // 2. Статичні фронтенд-ресурси з Cloudflare Static Assets
-        if (request.method === "GET") {
-            const assetResponse = await env.ASSETS.fetch(request);
-            if (assetResponse.status !== 404) {
-                return assetResponse;
-            }
-        }
-
-        // 3. Рендеринг фронтенд-сторінки для звичайних GET запитів
-        if (request.method === "GET") {
+        // 2. Рендеринг HTML для головної сторінки
+        if (request.method === "GET" && (url.pathname === "/" || url.pathname === "/index.html")) {
             const html = renderHTML();
             return new Response(html, {
                 headers: {

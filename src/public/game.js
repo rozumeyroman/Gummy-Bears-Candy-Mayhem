@@ -20,7 +20,16 @@ function applyServerRoom(room) { window.currentRoom=room; room.teamA.bearParts?.
 function syncTeamPositions(team,positions) { positions?.forEach((x,index)=>{if(Number.isFinite(x)&&team[index]){team[index].x=x;updateY(team[index]);}}); }
 function loadRoom(room) { generateTerrain(room.roomId); syncTeamPositions(teamA,room.teamA.bearPositions); syncTeamPositions(teamB,room.teamB.bearPositions); applyServerRoom(room); }
 function spawnBullet(bear,ownerTeam) { const part=BEAR_PARTS[bear.partsCount-1]; if(!part)return; const offset=18; bullet={x:bear.x+part.dx+Math.cos(bear.angle)*offset,y:bear.y+part.dy+Math.sin(bear.angle)*offset,vx:Math.cos(bear.angle)*(bear.power/6),vy:Math.sin(bear.angle)*(bear.power/6),radius:part.r,color:bear.color,ownerTeam}; bear.power=0; }
-async function requestAction(action,payload,token=window.playerToken) { const response=await fetch('/api/game-action',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({roomId:window.currentRoom.roomId,playerToken:token,action,payload})}); return {response,data:await response.json()}; }
+async function requestAction(action,payload,token=window.playerToken) { 
+  const effectiveToken = token || sessionStorage.getItem('gummy_player_token');
+  const response=await fetch('/api/game-action',{
+    method:'POST',
+    credentials: 'same-origin',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({roomId:window.currentRoom.roomId,playerToken:effectiveToken,action,payload})
+  }); 
+  return {response,data:await response.json()}; 
+}
 async function reportFall(bear,team,index) { if(bear.fallReported||!window.currentRoom)return; const isAiBear=window.currentRoom.mode==='AI'&&team==='TEAM_B'; if(team!==window.myTeam&&!isAiBear)return; bear.fallReported=true; bear.partsCount=0; bear.isCharging=false; try { const {response,data}=await requestAction('REPORT_FALL',{bearIndex:index},isAiBear?'BOT_TOKEN':window.playerToken); if(response.ok&&data.room)applyServerRoom(data.room); } catch (_) { bear.fallReported=false; } }
 async function handlePlayerShoot(bear) { bear.isCharging=false; if(bear.partsCount<=0||bullet||resolvingExplosion||!window.isMyTurn)return; const team=window.myTeam==='TEAM_A'?teamA:teamB; try { const {response,data}=await requestAction('SHOOT',{bearIndex:team.indexOf(bear),bearX:bear.x,bearY:bear.y,angle:bear.angle,power:bear.power}); if(!response.ok||!data.room)return; spawnBullet(bear,window.myTeam); applyServerRoom(data.room); } catch (_) {} }
 function executeRemoteShoot(action) { const team=action.team==='TEAM_A'?teamA:teamB, bear=team[action.bearIndex]||team[0]; if(Number.isFinite(action.bearX))bear.x=action.bearX; updateY(bear); bear.angle=action.angle; bear.power=action.power; spawnBullet(bear,action.team); }

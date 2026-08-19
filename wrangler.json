@@ -2,5 +2,11 @@
   "name": "gummy-bears-candy-mayhem",
   "main": "src/index.js",
   "compatibility_date": "2026-08-03",
-  "assets": { "directory": "./src/public" }
+  "assets": { "directory": "./src/public" },
+  "kv_namespaces": [
+    {
+      "binding": "ROOMS_STORE",
+      "id": "213e52a80b9c4208bec18b66fdf1aac1"
+    }
+  ]
 }

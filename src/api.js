@@ -8,13 +8,13 @@ import {
 } from "./security.js";
 
 import {
-    activeRooms,
+    getRoom,
+    setRoom,
     sanitize,
     generateRoomCode,
     resolveRps,
     nextAliveBearIndex,
-    syncTeamParts,
-    cleanExpiredRooms
+    syncTeamParts
 } from "./rooms.js";
 
 export async function handleApiRoutes(request, env, url) {
@@ -110,8 +110,7 @@ export async function handleApiRoutes(request, env, url) {
                 createdAt: Date.now()
             };
 
-            cleanExpiredRooms();
-            activeRooms.set(roomId, roomState);
+            await setRoom(env, roomId, roomState);
 
             const clientState = JSON.parse(JSON.stringify(roomState));
             delete clientState.teamA.token;
@@ -129,7 +128,7 @@ export async function handleApiRoutes(request, env, url) {
     if (url.pathname === "/api/join-room" && request.method === "POST") {
         try {
             const { roomId, username, rpsChoice } = await request.json();
-            const roomState = activeRooms.get(roomId);
+            const roomState = await getRoom(env, roomId);
 
             if (!roomState) {
                 return new Response(JSON.stringify({ error: "Кімнату не знайдено" }), { status: 404 });
@@ -149,7 +148,7 @@ export async function handleApiRoutes(request, env, url) {
             roomState.activeTeam = rps.winner;
             roomState.rpsResult = { isTie: rps.isTie, winner: rps.winner };
 
-            activeRooms.set(roomId, roomState);
+            await setRoom(env, roomId, roomState);
 
             const clientState = JSON.parse(JSON.stringify(roomState));
             delete clientState.teamA.token;
@@ -167,7 +166,7 @@ export async function handleApiRoutes(request, env, url) {
     if (url.pathname === "/api/room-state" && request.method === "GET") {
         try {
             const roomId = url.searchParams.get("roomId");
-            const room = activeRooms.get(roomId);
+            const room = await getRoom(env, roomId);
             if (!room) {
                 return new Response(JSON.stringify({ error: "Кімнату не знайдено" }), { status: 404 });
             }
@@ -184,7 +183,7 @@ export async function handleApiRoutes(request, env, url) {
     if (url.pathname === "/api/game-action" && request.method === "POST") {
         try {
             const { roomId, playerToken, action, payload } = await request.json();
-            const room = activeRooms.get(roomId);
+            const room = await getRoom(env, roomId);
 
             if (!room) {
                 return new Response(JSON.stringify({ error: "Недійсна сесія" }), { status: 403 });
@@ -282,7 +281,7 @@ export async function handleApiRoutes(request, env, url) {
                 return new Response(JSON.stringify({ error: "Невідома ігрова дія" }), { status: 400 });
             }
 
-            activeRooms.set(roomId, room);
+            await setRoom(env, roomId, room);
 
             const clientState = JSON.parse(JSON.stringify(room));
             delete clientState.teamA.token;

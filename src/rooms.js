@@ -1,6 +1,20 @@
 // src/rooms.js
 
-export const activeRooms = new Map();
+export async function getRoom(env, roomId) {
+    if (!env?.ROOMS_STORE) return null;
+    const data = await env.ROOMS_STORE.get(roomId);
+    return data ? JSON.parse(data) : null;
+}
+
+export async function setRoom(env, roomId, roomState, ttlSeconds = 3600) {
+    if (!env?.ROOMS_STORE) return;
+    await env.ROOMS_STORE.put(roomId, JSON.stringify(roomState), { expirationTtl: ttlSeconds });
+}
+
+export async function deleteRoom(env, roomId) {
+    if (!env?.ROOMS_STORE) return;
+    await env.ROOMS_STORE.delete(roomId);
+}
 
 export function sanitize(str) {
     if (typeof str !== 'string') return '';
@@ -49,14 +63,4 @@ export function nextAliveBearIndex(bearParts, currentIndex) {
 
 export function syncTeamParts(team) {
     team.partsLeft = team.bearParts.reduce((total, parts) => total + parts, 0);
-}
-
-export function cleanExpiredRooms() {
-    const now = Date.now();
-    const EXPIRATION_MS = 3600 * 1000;
-    for (const [id, room] of activeRooms.entries()) {
-        if (now - (room.createdAt || 0) > EXPIRATION_MS) {
-            activeRooms.delete(id);
-        }
-    }
 }

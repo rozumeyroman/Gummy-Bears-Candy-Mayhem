@@ -100,8 +100,8 @@ export async function handleApiRoutes(request, env, url) {
                 roomId,
                 mode,
                 status: mode === "AI" ? "PLAYING" : "WAITING",
-                teamA: { username, rpsChoice, score: 0, token: hostToken, bearParts: [10, 10, 10], partsLeft: 30 },
-                teamB: { username: mode === "AI" ? "Бот 🤖" : null, rpsChoice: aiRpsChoice, score: 0, token: mode === "AI" ? "BOT_TOKEN" : null, bearParts: [10, 10, 10], partsLeft: 30 },
+                teamA: { username, rpsChoice, score: 0, token: hostToken, bearParts: [10, 10, 10], bearPositions: [160, 300, 440], partsLeft: 30 },
+                teamB: { username: mode === "AI" ? "Бот 🤖" : null, rpsChoice: aiRpsChoice, score: 0, token: mode === "AI" ? "BOT_TOKEN" : null, bearParts: [10, 10, 10], bearPositions: [960, 1100, 1240], partsLeft: 30 },
                 activeTeam: firstTurn,
                 activeBearIndex: { TEAM_A: 0, TEAM_B: 0 },
                 pendingShot: null,
@@ -215,11 +215,19 @@ export async function handleApiRoutes(request, env, url) {
                 if (!Number.isInteger(bearIndex) || bearIndex !== room.activeBearIndex[actingTeam] || actingState.bearParts[bearIndex] <= 0) {
                     return new Response(JSON.stringify({ error: "Недійсний активний ведмедик" }), { status: 400 });
                 }
+                const bearX = Number(payload?.bearX);
+                const bearY = Number(payload?.bearY);
+                if (!Number.isFinite(bearX) || !Number.isFinite(bearY)) {
+                    return new Response(JSON.stringify({ error: "Некоректна позиція ведмедика" }), { status: 400 });
+                }
+                actingState.bearPositions[bearIndex] = bearX;
 
                 room.lastAction = {
                     type: "SHOOT",
                     team: actingTeam,
                     bearIndex,
+                    bearX,
+                    bearY,
                     angle: payload.angle,
                     power: payload.power,
                     timestamp: Date.now()

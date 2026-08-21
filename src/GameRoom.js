@@ -33,6 +33,9 @@ export class GameRoom extends DurableObject {
 
     persist() {
         if (!this.roomState) return;
+        // Монотонна версія стану — клієнт використовує її, щоб застарілий ROOM_UPDATED
+        // (що прийшов пізніше свіжого, напр. через відкладену анімацію) не перезаписав новіші дані
+        this.roomState.version = (this.roomState.version || 0) + 1;
         this.ctx.storage.sql.exec(
             `INSERT INTO rooms (id, data) VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET data = excluded.data`,
             this.roomState.roomId,

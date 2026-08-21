@@ -56,8 +56,10 @@ function getActiveBear() { if(!window.currentRoom)return teamA[0]; const team=wi
 function updateTurnUI() { if(!window.currentRoom)return; window.isMyTurn=window.currentRoom.status==='PLAYING'&&window.currentRoom.activeTeam===window.myTeam&&!window.currentRoom.pendingShot&&!bullet&&!resolvingExplosion; const info=document.getElementById('turn-info'); info.innerText=window.currentRoom.status==='WAITING'?'Очікування другого гравця...':window.currentRoom.status==='FINISHED'?'Матч завершено':window.currentRoom.pendingShot||bullet||resolvingExplosion?'Постріл у польоті...':window.isMyTurn?'Хід: Ваш хід! 🟩':'Хід: Ходить суперник... 🟥'; document.getElementById('windDisplay').innerText=wind>0?`➡️ ${Math.abs(wind*10).toFixed(1)}`:`⬅️ ${Math.abs(wind*10).toFixed(1)}`; }
 
 // Застосовує стан кімнати, отриманий із сервера: синхронізує кількість частин тіла, оновлює UI ходу
-// і показує модалку завершення гри, якщо матч закінчився
-function applyServerRoom(room) { window.currentRoom=room; room.teamA.bearParts?.forEach((parts,index)=>teamA[index].partsCount=parts); room.teamB.bearParts?.forEach((parts,index)=>teamB[index].partsCount=parts); updateTurnUI(); if(room.status==='FINISHED')window.network.showGameOverModal(room); }
+// і показує модалку завершення гри, якщо матч закінчився. Застарілий стан (нижча версія тієї ж
+// кімнати — напр. відкладений через анімацію ROOM_UPDATED, що прийшов раніше свіжішого) ігнорується,
+// щоб не перезаписати вже оновлений pendingShot/activeTeam назад на застарілі значення
+function applyServerRoom(room) { if(window.currentRoom&&room.roomId===window.currentRoom.roomId&&typeof room.version==='number'&&typeof window.currentRoom.version==='number'&&room.version<=window.currentRoom.version)return; window.currentRoom=room; room.teamA.bearParts?.forEach((parts,index)=>teamA[index].partsCount=parts); room.teamB.bearParts?.forEach((parts,index)=>teamB[index].partsCount=parts); updateTurnUI(); if(room.status==='FINISHED')window.network.showGameOverModal(room); }
 
 // Синхронізує X-позиції ведмедиків команди з масивом позицій із сервера та підтягує їхній Y під рельєф
 function syncTeamPositions(team,positions) { positions?.forEach((x,index)=>{if(Number.isFinite(x)&&team[index]){team[index].x=x;updateY(team[index]);}}); }

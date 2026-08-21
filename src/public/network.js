@@ -233,10 +233,10 @@ window.joinMultiplayerRoom = async () => {
 };
 
 function handleIncomingRoomState(room) {
-  const wasWaiting = window.currentRoom?.status === 'WAITING';
   window.game.receiveRoomState(room);
-  if (wasWaiting && room.status === 'PLAYING') {
-    document.getElementById('createdRoomModal').style.display = 'none';
+  const createdRoomModal = document.getElementById('createdRoomModal');
+  if (room.status === 'PLAYING' && createdRoomModal.style.display !== 'none') {
+    createdRoomModal.style.display = 'none';
     showRpsModal(room);
   }
 }

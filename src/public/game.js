@@ -61,17 +61,13 @@ function loadRoom(room) { generateTerrain(room.roomId); syncTeamPositions(teamA,
 // Створює снаряд (bullet), що вилітає з поточної "живої" частини тіла ведмедика в напрямку прицілу з заданою потужністю
 function spawnBullet(bear,ownerTeam) { const part=BEAR_PARTS[bear.partsCount-1]; if(!part)return; const offset=18; bullet={x:bear.x+part.dx+Math.cos(bear.angle)*offset,y:bear.y+part.dy+Math.sin(bear.angle)*offset,vx:Math.cos(bear.angle)*(bear.power/6),vy:Math.sin(bear.angle)*(bear.power/6),radius:part.r,color:bear.color,ownerTeam}; bear.power=0; }
 
-// Надсилає ігрову дію на сервер (постріл, падіння, пошкодження тощо) через POST /api/game-action,
-// підставляючи токен гравця з sessionStorage, якщо явно не передано інший
+// Надсилає ігрову дію на сервер (постріл, падіння, пошкодження тощо) через WebSocket
+// (див. window.network.sendGameAction у network.js), підставляючи токен гравця
+// з sessionStorage, якщо явно не передано інший
 async function requestAction(action,payload,token=window.playerToken) {
   const effectiveToken = token || sessionStorage.getItem('gummy_player_token');
-  const response=await fetch('/api/game-action',{
-    method:'POST',
-    credentials: 'same-origin',
-    headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({roomId:window.currentRoom.roomId,playerToken:effectiveToken,action,payload})
-  });
-  return {response,data:await response.json()};
+  const result = await window.network.sendGameAction(action,payload,effectiveToken);
+  return {response:{ok:!result.error},data:{room:result.room,error:result.error}};
 }
 
 // Повідомляє сервер, що ведмедик впав у прірву (втрачає всі частини тіла); оновлює стан з відповіді сервера

@@ -1,23 +1,6 @@
 // src/rooms.js
-
-// Функція для отримання даних кімнати за її ID
-export async function getRoom(env, roomId) {
-    if (!env?.ROOMS_STORE) return null;
-    const data = await env.ROOMS_STORE.get(roomId);
-    return data ? JSON.parse(data) : null;
-}
-
-// Функція для збереження стану кімнати за її ID
-export async function setRoom(env, roomId, roomState, ttlSeconds = 3600) {
-    if (!env?.ROOMS_STORE) return;
-    await env.ROOMS_STORE.put(roomId, JSON.stringify(roomState), { expirationTtl: ttlSeconds });
-}
-
-// Функція для видалення кімнати за її ID
-export async function deleteRoom(env, roomId) {
-    if (!env?.ROOMS_STORE) return;
-    await env.ROOMS_STORE.delete(roomId);
-}
+// Чисті допоміжні функції ігрової логіки, що не залежать від сховища.
+// Стан кімнати тепер живе в GameRoom (Durable Object + SQLite), не тут.
 
 // Функція для санітизації рядка, щоб уникнути XSS атак
 export function sanitize(str) {

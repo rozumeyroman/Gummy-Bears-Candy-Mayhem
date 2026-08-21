@@ -4,9 +4,10 @@ window.selectedRps = 'rock';
 window.turnstileVerified = false;
 window.myTeam = 'TEAM_A';
 window.isMyTurn = false;
-window.pollingTimer = null;
+window.wsConnection = null;
 window.screenShake = 0;
-let pollingInFlight = false;
+const wsPendingRequests = new Map();
+let wsRequestCounter = 0;
 
 window.handleTurnstileSuccess = async (token) => {
   const status = document.getElementById('turnstileStatus');
@@ -111,11 +112,8 @@ window.closeRpsModal = () => {
   }
 };
 
-function showGameOverModal(room) { 
-  if (window.pollingTimer) { 
-    clearInterval(window.pollingTimer); 
-    window.pollingTimer = null; 
-  } 
+function showGameOverModal(room) {
+  closeRoomSocket();
   const winner = room.teamA.partsLeft > 0 ? 'TEAM_A' : room.teamB.partsLeft > 0 ? 'TEAM_B' : 'DRAW'; 
   const isWin = winner === window.myTeam; 
   document.getElementById('gameOverTitle').innerText = winner === 'DRAW' ? '🤝 НІЧИЯ!' : isWin ? '🎉 ПЕРЕМОГА!' : '😱 ПОРАЗКА!'; 
@@ -123,11 +121,10 @@ function showGameOverModal(room) {
   document.getElementById('gameOverModal').style.display = 'flex'; 
 }
 
-window.rematch = () => { 
-  document.getElementById('gameOverModal').style.display = 'none'; 
-  if (window.pollingTimer) clearInterval(window.pollingTimer); 
-  window.pollingTimer = null; 
-  window.currentRoom = null; 
+window.rematch = () => {
+  document.getElementById('gameOverModal').style.display = 'none';
+  closeRoomSocket();
+  window.currentRoom = null;
   window.playerToken = null; 
   sessionStorage.removeItem('gummy_player_token'); 
   sessionStorage.removeItem('gummy_my_team'); 
@@ -164,14 +161,15 @@ window.startAiGame = async () => {
     window.myTeam = 'TEAM_A'; 
     sessionStorage.setItem('gummy_player_token', data.playerToken); 
     sessionStorage.setItem('gummy_my_team', 'TEAM_A'); 
-    window.game.loadRoom(data.roomState); 
-    document.getElementById('teamAName').innerText = username; 
-    document.getElementById('teamBName').innerText = 'Бот 🤖'; 
-    document.getElementById('lobbyModal').style.display = 'none'; 
-    showRpsModal(data.roomState); 
-  } catch (error) { 
-    alert(error.message); 
-  } 
+    window.game.loadRoom(data.roomState);
+    document.getElementById('teamAName').innerText = username;
+    document.getElementById('teamBName').innerText = 'Бот 🤖';
+    document.getElementById('lobbyModal').style.display = 'none';
+    showRpsModal(data.roomState);
+    connectRoomSocket(data.roomId);
+  } catch (error) {
+    alert(error.message);
+  }
 };
 
 window.createMultiplayerRoom = async () => { 
@@ -187,12 +185,12 @@ window.createMultiplayerRoom = async () => {
     window.game.loadRoom(data.roomState); 
     document.getElementById('teamAName').innerText = username; 
     document.getElementById('teamBName').innerText = 'Очікування суперника...'; 
-    document.getElementById('lobbyModal').style.display = 'none'; 
-    showCreatedRoomModal(data.roomId); 
-    startPolling(); 
-  } catch (error) { 
-    alert(error.message); 
-  } 
+    document.getElementById('lobbyModal').style.display = 'none';
+    showCreatedRoomModal(data.roomId);
+    connectRoomSocket(data.roomId);
+  } catch (error) {
+    alert(error.message);
+  }
 };
 
 window.joinMultiplayerRoom = async () => { 
@@ -226,37 +224,71 @@ window.joinMultiplayerRoom = async () => {
     window.game.loadRoom(data.roomState); 
     document.getElementById('teamAName').innerText = data.roomState.teamA.username; 
     document.getElementById('teamBName').innerText = username; 
-    document.getElementById('lobbyModal').style.display = 'none'; 
-    showRpsModal(data.roomState); 
-    startPolling(); 
-  } catch (error) { 
-    alert(error.message); 
-  } 
+    document.getElementById('lobbyModal').style.display = 'none';
+    showRpsModal(data.roomState);
+    connectRoomSocket(roomId);
+  } catch (error) {
+    alert(error.message);
+  }
 };
 
-function startPolling() { 
-  if (window.pollingTimer) clearInterval(window.pollingTimer); 
-  window.pollingTimer = setInterval(async () => { 
-    if (!window.currentRoom || pollingInFlight) return; 
-    pollingInFlight = true; 
-    try { 
-      const res = await fetch(`/api/room-state?roomId=${window.currentRoom.roomId}`, { credentials: 'same-origin' }); 
-      const room = await res.json(); 
-      if (res.ok) { 
-        const wasWaiting = window.currentRoom.status === 'WAITING'; 
-        window.game.receiveRoomState(room); 
-        if (wasWaiting && room.status === 'PLAYING') {
-          document.getElementById('createdRoomModal').style.display = 'none'; 
-          showRpsModal(room);
-        } 
-      } 
-    } catch (_) {} finally { 
-      pollingInFlight = false; 
-    } 
-  }, 1500); 
+function handleIncomingRoomState(room) {
+  const wasWaiting = window.currentRoom?.status === 'WAITING';
+  window.game.receiveRoomState(room);
+  if (wasWaiting && room.status === 'PLAYING') {
+    document.getElementById('createdRoomModal').style.display = 'none';
+    showRpsModal(room);
+  }
 }
 
-window.network = { showGameOverModal };
+function closeRoomSocket() {
+  if (window.wsConnection) {
+    try { window.wsConnection.close(); } catch (_) {}
+  }
+  window.wsConnection = null;
+  wsPendingRequests.forEach((pending) => pending.resolve({ error: 'З’єднання закрито' }));
+  wsPendingRequests.clear();
+}
+
+function connectRoomSocket(roomId) {
+  closeRoomSocket();
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const ws = new WebSocket(`${protocol}//${window.location.host}/ws/room/${encodeURIComponent(roomId)}`);
+  window.wsConnection = ws;
+
+  ws.addEventListener('message', (event) => {
+    let message;
+    try { message = JSON.parse(event.data); } catch (_) { return; }
+
+    if (message.type === 'SYNC_STATE' || message.type === 'ROOM_UPDATED') {
+      handleIncomingRoomState(message.roomState);
+    } else if (message.type === 'ACTION_RESULT') {
+      const pending = wsPendingRequests.get(message.requestId);
+      if (!pending) return;
+      wsPendingRequests.delete(message.requestId);
+      pending.resolve({ error: message.error, room: message.room });
+    }
+  });
+
+  ws.addEventListener('close', () => {
+    if (window.wsConnection === ws) window.wsConnection = null;
+  });
+}
+
+function sendGameAction(action, payload, token) {
+  return new Promise((resolve) => {
+    const ws = window.wsConnection;
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      resolve({ error: 'Немає з’єднання із сервером' });
+      return;
+    }
+    const requestId = `${Date.now()}-${++wsRequestCounter}`;
+    wsPendingRequests.set(requestId, { resolve });
+    ws.send(JSON.stringify({ type: 'GAME_ACTION', playerToken: token, action, payload, requestId }));
+  });
+}
+
+window.network = { showGameOverModal, sendGameAction };
 
 function prepareInviteJoin(roomId) { 
   const cleanCode = roomId.trim().toUpperCase().match(/RM-[A-Z0-9]{6}/)?.[0] || ''; 

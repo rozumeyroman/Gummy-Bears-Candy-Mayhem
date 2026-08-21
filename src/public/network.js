@@ -334,13 +334,30 @@ function connectRoomSocket(roomId) {
   });
 }
 
-function sendGameAction(action, payload, token) {
+// Чекає, поки WS відкриється (він може ще підключатись одразу після старту гри — реальний
+// мережевий handshake, на відміну від localhost, займає помітний час), з таймаутом
+function waitForOpenSocket(timeoutMs = 5000) {
   return new Promise((resolve) => {
     const ws = window.wsConnection;
-    if (!ws || ws.readyState !== WebSocket.OPEN) {
-      resolve({ error: 'Немає з’єднання із сервером' });
-      return;
+    if (ws && ws.readyState === WebSocket.OPEN) { resolve(ws); return; }
+    if (!ws || ws.readyState !== WebSocket.CONNECTING) { resolve(null); return; }
+    const onOpen = () => { cleanup(); resolve(ws); };
+    const onClose = () => { cleanup(); resolve(null); };
+    const timer = setTimeout(() => { cleanup(); resolve(null); }, timeoutMs);
+    function cleanup() {
+      clearTimeout(timer);
+      ws.removeEventListener('open', onOpen);
+      ws.removeEventListener('close', onClose);
     }
+    ws.addEventListener('open', onOpen);
+    ws.addEventListener('close', onClose);
+  });
+}
+
+async function sendGameAction(action, payload, token) {
+  const ws = await waitForOpenSocket();
+  if (!ws) return { error: 'Немає з’єднання із сервером' };
+  return new Promise((resolve) => {
     const requestId = `${Date.now()}-${++wsRequestCounter}`;
     wsPendingRequests.set(requestId, { resolve });
     ws.send(JSON.stringify({ type: 'GAME_ACTION', playerToken: token, action, payload, requestId }));
@@ -349,14 +366,9 @@ function sendGameAction(action, payload, token) {
 
 window.network = { showGameOverModal, sendGameAction };
 
-function prepareInviteJoin(roomId) { 
-  const cleanCode = roomId.trim().toUpperCase().match(/RM-[A-Z0-9]{6}/)?.[0] || ''; 
-  document.getElementById('roomCodeInput').value = cleanCode; 
-  if (!cleanCode) return; 
-  document.getElementById('aiGameButton').style.display = 'none'; 
-  document.getElementById('createRoomButton').style.display = 'none'; 
-  document.getElementById('usernameInput').focus(); 
-}
+// Мультиплеєр тимчасово вимкнено в UI — старе запрошення (?room=...) більше нікуди не веде,
+// тож нічого не прифілюємо і не ховаємо кнопку гри проти AI
+function prepareInviteJoin(roomId) {}
 
 window.addEventListener('DOMContentLoaded', () => { 
   const savedName = localStorage.getItem('gummy_username'); 

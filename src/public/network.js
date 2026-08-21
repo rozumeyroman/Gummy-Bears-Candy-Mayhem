@@ -241,24 +241,52 @@ function handleIncomingRoomState(room) {
   }
 }
 
+let wsRoomId = null;
+let wsReconnectTimer = null;
+let wsReconnectAttempts = 0;
+
 function closeRoomSocket() {
-  if (window.wsConnection) {
-    try { window.wsConnection.close(); } catch (_) {}
+  wsRoomId = null;
+  if (wsReconnectTimer) {
+    clearTimeout(wsReconnectTimer);
+    wsReconnectTimer = null;
   }
-  window.wsConnection = null;
+  wsReconnectAttempts = 0;
+  if (window.wsConnection) {
+    const ws = window.wsConnection;
+    window.wsConnection = null;
+    ws.onclose = null;
+    try { ws.close(); } catch (_) {}
+  }
   wsPendingRequests.forEach((pending) => pending.resolve({ error: 'З’єднання закрито' }));
   wsPendingRequests.clear();
 }
 
 function connectRoomSocket(roomId) {
-  closeRoomSocket();
+  wsRoomId = roomId;
+  if (wsReconnectTimer) {
+    clearTimeout(wsReconnectTimer);
+    wsReconnectTimer = null;
+  }
+  if (window.wsConnection) {
+    const previous = window.wsConnection;
+    window.wsConnection = null;
+    previous.onclose = null;
+    try { previous.close(); } catch (_) {}
+  }
+
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   const ws = new WebSocket(`${protocol}//${window.location.host}/ws/room/${encodeURIComponent(roomId)}`);
   window.wsConnection = ws;
 
+  ws.addEventListener('open', () => {
+    wsReconnectAttempts = 0;
+  });
+
   ws.addEventListener('message', (event) => {
     let message;
     try { message = JSON.parse(event.data); } catch (_) { return; }
+    console.log('WS message received:', message);
 
     if (message.type === 'SYNC_STATE' || message.type === 'ROOM_UPDATED') {
       handleIncomingRoomState(message.roomState);
@@ -271,7 +299,17 @@ function connectRoomSocket(roomId) {
   });
 
   ws.addEventListener('close', () => {
-    if (window.wsConnection === ws) window.wsConnection = null;
+    if (window.wsConnection !== ws) return;
+    window.wsConnection = null;
+    if (!wsRoomId || window.currentRoom?.status === 'FINISHED') return;
+    const delay = Math.min(5000, 500 * 2 ** wsReconnectAttempts);
+    wsReconnectAttempts++;
+    console.log(`WS closed, reconnecting to ${wsRoomId} in ${delay}ms`);
+    wsReconnectTimer = setTimeout(() => connectRoomSocket(wsRoomId), delay);
+  });
+
+  ws.addEventListener('error', (event) => {
+    console.log('WS error:', event);
   });
 }
 

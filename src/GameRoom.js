@@ -40,10 +40,9 @@ export class GameRoom extends DurableObject {
         );
     }
 
-    broadcast(message, exceptWs = null) {
+    broadcast(message) {
         const payload = JSON.stringify(message);
         for (const ws of this.ctx.getWebSockets()) {
-            if (ws === exceptWs) continue;
             try { ws.send(payload); } catch (_) {}
         }
     }
@@ -226,7 +225,7 @@ export class GameRoom extends DurableObject {
         }));
 
         if (!result.error) {
-            this.broadcast({ type: "ROOM_UPDATED", roomState: result.room }, ws);
+            this.broadcast({ type: "ROOM_UPDATED", roomState: result.room });
         }
     }
 

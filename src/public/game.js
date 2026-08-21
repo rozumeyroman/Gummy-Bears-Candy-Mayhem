@@ -81,7 +81,7 @@ async function requestAction(action,payload,token=window.playerToken) {
 async function reportFall(bear,team,index) { if(bear.fallReported||!window.currentRoom)return; const isAiBear=window.currentRoom.mode==='AI'&&team==='TEAM_B'; if(team!==window.myTeam&&!isAiBear)return; bear.fallReported=true; bear.partsCount=0; bear.isCharging=false; try { const {response,data}=await requestAction('REPORT_FALL',{bearIndex:index},isAiBear?'BOT_TOKEN':window.playerToken); if(response.ok&&data.room)applyServerRoom(data.room); } catch (_) { bear.fallReported=false; } }
 
 // Обробляє постріл гравця: перевіряє чи можна стріляти, надсилає дію SHOOT на сервер, і локально запускає снаряд
-async function handlePlayerShoot(bear) { bear.isCharging=false; if(bear.partsCount<=0||bullet||resolvingExplosion||!window.isMyTurn)return; const team=window.myTeam==='TEAM_A'?teamA:teamB; try { const {response,data}=await requestAction('SHOOT',{bearIndex:team.indexOf(bear),bearX:bear.x,bearY:bear.y,angle:bear.angle,power:bear.power}); if(!response.ok||!data.room)return; spawnBullet(bear,window.myTeam); applyServerRoom(data.room); } catch (_) {} }
+async function handlePlayerShoot(bear) { bear.isCharging=false; if(bear.partsCount<=0||bullet||resolvingExplosion||!window.isMyTurn)return; const team=window.myTeam==='TEAM_A'?teamA:teamB; try { const {response,data}=await requestAction('SHOOT',{bearIndex:team.indexOf(bear),bearX:bear.x,bearY:bear.y,angle:bear.angle,power:bear.power}); if(!response.ok||!data.room){console.error('Shoot failed:',data?.error);bear.isCharging=false;return;} spawnBullet(bear,window.myTeam); applyServerRoom(data.room); } catch (_) { bear.isCharging=false; } }
 
 // Відтворює постріл суперника, отриманий через мережу: виставляє позицію/кут/потужність ведмедика і запускає снаряд
 function executeRemoteShoot(action) { const team=action.team==='TEAM_A'?teamA:teamB, bear=team[action.bearIndex]||team[0]; if(Number.isFinite(action.bearX))bear.x=action.bearX; updateY(bear); bear.angle=action.angle; bear.power=action.power; spawnBullet(bear,action.team); }
@@ -147,7 +147,7 @@ function receiveRoomState(room) {
 window.addEventListener('keydown',(event)=>keys[event.code]=true);window.addEventListener('keyup',(event)=>{keys[event.code]=false;const bear=getActiveBear();if(event.code==='Space'&&bear?.isCharging&&window.isMyTurn)handlePlayerShoot(bear);});
 
 // Публічний API гри, доступний іншим скриптам (наприклад, мережевому шару) через window.game
-window.game={resetBears,loadRoom,receiveRoomState,handleAiTurn};
+window.game={resetBears,loadRoom,receiveRoomState,handleAiTurn,updateTurnUI};
 
 // Початкова генерація рельєфу до завантаження конкретної кімнати
 generateTerrain();

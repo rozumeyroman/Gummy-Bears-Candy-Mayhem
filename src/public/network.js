@@ -80,35 +80,45 @@ window.copyRoomInvite = async () => {
   } 
 };
 
-function showRpsModal(room) { 
-  const modal = document.getElementById('rpsModal'), 
-        detail = document.getElementById('rpsDetail'), 
-        winnerText = document.getElementById('rpsWinnerText'), 
-        coinContainer = document.getElementById('coinContainer'), 
-        coinElem = document.getElementById('coinElem'); 
-  const icons = { rock: '🪨', paper: '📄', scissors: '✂️' }; 
-  detail.innerText = `${room.teamA.username} (${icons[room.teamA.rpsChoice] || '🪨'}) VS ${room.teamB.username} (${icons[room.teamB.rpsChoice] || '🪨'})`; 
-  if (room.rpsResult.isTie) { 
-    coinContainer.style.display = 'block'; 
-    winnerText.innerText = 'Нічия за вибором! Жеребкування...'; 
-    modal.style.display = 'flex'; 
-    setTimeout(() => { 
-      coinElem.style.transform = `rotateY(${room.rpsResult.winner === 'TEAM_A' ? 1800 : 1980}deg)`; 
-      setTimeout(() => { 
-        winnerText.innerText = `Жереб визначив! Першим ходить ${room.rpsResult.winner === 'TEAM_A' ? room.teamA.username : room.teamB.username}!`; 
-      }, 2000); 
-    }, 300); 
-  } else { 
-    coinContainer.style.display = 'none'; 
-    winnerText.innerText = `Перемога в RPS! Першим ходить ${room.rpsResult.winner === 'TEAM_A' ? room.teamA.username : room.teamB.username}!`; 
-    modal.style.display = 'flex'; 
-  } 
+function applyRpsWinner(room) {
+  if (window.currentRoom) window.currentRoom.activeTeam = room.rpsResult.winner;
+  window.game.updateTurnUI();
 }
 
-window.closeRpsModal = () => { 
-  document.getElementById('rpsModal').style.display = 'none'; 
+function showRpsModal(room) {
+  document.getElementById('createdRoomModal').style.display = 'none';
+  const modal = document.getElementById('rpsModal'),
+        detail = document.getElementById('rpsDetail'),
+        winnerText = document.getElementById('rpsWinnerText'),
+        coinContainer = document.getElementById('coinContainer'),
+        coinElem = document.getElementById('coinElem');
+  const icons = { rock: '🪨', paper: '📄', scissors: '✂️' };
+  detail.innerText = `${room.teamA.username} (${icons[room.teamA.rpsChoice] || '🪨'}) VS ${room.teamB.username} (${icons[room.teamB.rpsChoice] || '🪨'})`;
+  if (room.rpsResult.isTie) {
+    coinContainer.style.display = 'block';
+    winnerText.innerText = 'Нічия за вибором! Жеребкування...';
+    modal.style.display = 'flex';
+    setTimeout(() => {
+      coinElem.style.transform = `rotateY(${room.rpsResult.winner === 'TEAM_A' ? 1800 : 1980}deg)`;
+      setTimeout(() => {
+        winnerText.innerText = `Жереб визначив! Першим ходить ${room.rpsResult.winner === 'TEAM_A' ? room.teamA.username : room.teamB.username}!`;
+        applyRpsWinner(room);
+      }, 2000);
+    }, 300);
+  } else {
+    coinContainer.style.display = 'none';
+    winnerText.innerText = `Перемога в RPS! Першим ходить ${room.rpsResult.winner === 'TEAM_A' ? room.teamA.username : room.teamB.username}!`;
+    modal.style.display = 'flex';
+    applyRpsWinner(room);
+  }
+}
+
+window.closeRpsModal = () => {
+  document.getElementById('rpsModal').style.display = 'none';
+  document.getElementById('createdRoomModal').style.display = 'none';
+  window.game.updateTurnUI();
   if (window.currentRoom?.mode === 'AI' && window.currentRoom.activeTeam === 'TEAM_B') {
-    setTimeout(() => window.game.handleAiTurn(), 1000); 
+    setTimeout(() => window.game.handleAiTurn(), 1000);
   }
 };
 

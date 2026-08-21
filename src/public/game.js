@@ -1,50 +1,136 @@
+// Canvas та контекст рендерингу гри
 const canvas = document.getElementById('gameCanvas');
 const ctx = canvas.getContext('2d');
+
+// Опис "частин" ведмедика (кола з offset-ами та радіусом), з яких малюється тіло.
+// Втрата частин тіла (partsCount) відображає отримані пошкодження.
 const BEAR_PARTS = [{dx:-8,dy:13,r:6},{dx:8,dy:13,r:6},{dx:-13,dy:-4,r:5},{dx:13,dy:-4,r:5},{dx:-8,dy:-20,r:5},{dx:8,dy:-20,r:5},{dx:0,dy:6,r:9},{dx:0,dy:-3,r:8},{dx:0,dy:-11,r:7},{dx:0,dy:-15,r:8}];
+
+// Висота рельєфу (terrain[x] = y-координата поверхні острова) для кожного пікселя по X
 const terrain = new Array(canvas.width);
+
+// Команди гравців: масиви ведмедиків з позицією, кольором, кутом прицілювання, потужністю пострілу
 const teamA = [{x:160,y:0,partsCount:10,color:'#52b788',angle:-Math.PI/4,power:0,isCharging:false},{x:300,y:0,partsCount:10,color:'#40916c',angle:-Math.PI/4,power:0,isCharging:false},{x:440,y:0,partsCount:10,color:'#2d6a4f',angle:-Math.PI/4,power:0,isCharging:false}];
 const teamB = [{x:960,y:0,partsCount:10,color:'#ff4d6d',angle:-Math.PI*.75,power:0,isCharging:false},{x:1100,y:0,partsCount:10,color:'#c9184a',angle:-Math.PI*.75,power:0,isCharging:false},{x:1240,y:0,partsCount:10,color:'#800f2f',angle:-Math.PI*.75,power:0,isCharging:false}];
+
+// Глобальний стан гри: вітер, поточний снаряд, прапорці анімацій/вибуху, частинки ефектів,
+// час останнього кадру та накопичувач для фіксованого кроку фізики
 let wind=0, bullet=null, resolvingExplosion=false, aiMoving=false, particles=[], lastFrameTime=0, physicsAccumulator=0;
 let clouds=[];
+// Стан натиснутих клавіш керування
 const keys={};
+
+// Простий детермінований хеш рядка -> число, використовується як seed для генератора рельєфу
 function hashString(value) { let hash=0; for (let index=0; index<value.length; index++) hash=(hash*31+value.charCodeAt(index))|0; return Math.abs(hash)||1; }
+
+// Лінійний конгруентний генератор псевдовипадкових чисел (детермінований за seed),
+// щоб рельєф острова був однаковим для всіх гравців у кімнаті з однаковим roomId
 function seededRandom(seed) { let value=seed%2147483647; if (value<=0) value+=2147483646; return () => { value=(value*16807)%2147483647; return (value-1)/2147483646; }; }
+
+// Генерує рельєф острова (масив terrain), вітер і хмари на основі roomId (детерміновано для обох гравців)
 function generateTerrain(roomId) { const random=seededRandom(hashString(roomId||'default-seed')), islandLeft=120, islandRight=canvas.width-120, base=330+random()*45, first=.006+random()*.006, second=.016+random()*.01; for(let x=0;x<canvas.width;x++){if(x<islandLeft||x>islandRight){terrain[x]=canvas.height+500;continue;}const edge=Math.min(x-islandLeft,islandRight-x), edgeDrop=Math.max(0,70-edge*.45);let height=base+Math.sin(x*first)*45+Math.cos(x*second)*18+edgeDrop;terrain[x]=Math.max(230,Math.min(canvas.height-80,height));} wind=random()*.4-.2; clouds=Array.from({length:4},()=>({x:islandLeft+50+random()*(islandRight-islandLeft-100),y:50+random()*130,radius:22+random()*10,alive:true})); }
+
+// Хвиляста нижня межа острова (декоративна лінія дна), використовується для малювання та перевірки "провалу" вибуху
 function islandBottomY(x) { return Math.min(canvas.height-25,430+Math.sin(x*.02)*18); }
+
+// Перевіряє, чи координата x знаходиться поза островом (у "пустоті" за краями або рельєф видалений вибухом)
 function isVoid(x) { const index=Math.floor(x); return x<120||x>canvas.width-120||index<0||index>=canvas.width||terrain[index]>=canvas.height+400; }
+
+// Прив'язує Y-координату ведмедика до висоти рельєфу під ним (якщо він не над пустотою)
 function updateY(bear) { const index=Math.floor(bear.x); if(!isVoid(bear.x)&&index>=0&&index<canvas.width) bear.y=terrain[index]-5; }
+
+// Скидає позиції, здоров'я (partsCount) та стан обох команд до початкових значень нового раунду
 function resetBears() { bullet=null; resolvingExplosion=false; aiMoving=false; teamA.forEach((bear,index)=>Object.assign(bear,{partsCount:10,x:160+140*index,angle:-Math.PI/4,power:0,isCharging:false,fallReported:false})); teamB.forEach((bear,index)=>Object.assign(bear,{partsCount:10,x:960+140*index,angle:-Math.PI*.75,power:0,isCharging:false,fallReported:false})); }
+
+// Повертає ведмедика, який зараз ходить (перший живий, починаючи з активного індексу команди на сервері)
 function getActiveBear() { if(!window.currentRoom)return teamA[0]; const team=window.currentRoom.activeTeam==='TEAM_A'?teamA:teamB, start=window.currentRoom.activeBearIndex[window.currentRoom.activeTeam]; for(let offset=0;offset<team.length;offset++){const bear=team[(start+offset)%team.length];if(bear.partsCount>0)return bear;} return null; }
+
+// Оновлює прапорець window.isMyTurn та текст UI (хто ходить, статус матчу, сила/напрямок вітру)
 function updateTurnUI() { if(!window.currentRoom)return; window.isMyTurn=window.currentRoom.status==='PLAYING'&&window.currentRoom.activeTeam===window.myTeam&&!window.currentRoom.pendingShot&&!bullet&&!resolvingExplosion; const info=document.getElementById('turn-info'); info.innerText=window.currentRoom.status==='WAITING'?'Очікування другого гравця...':window.currentRoom.status==='FINISHED'?'Матч завершено':window.currentRoom.pendingShot||bullet||resolvingExplosion?'Постріл у польоті...':window.isMyTurn?'Хід: Ваш хід! 🟩':'Хід: Ходить суперник... 🟥'; document.getElementById('windDisplay').innerText=wind>0?`➡️ ${Math.abs(wind*10).toFixed(1)}`:`⬅️ ${Math.abs(wind*10).toFixed(1)}`; }
+
+// Застосовує стан кімнати, отриманий із сервера: синхронізує кількість частин тіла, оновлює UI ходу
+// і показує модалку завершення гри, якщо матч закінчився
 function applyServerRoom(room) { window.currentRoom=room; room.teamA.bearParts?.forEach((parts,index)=>teamA[index].partsCount=parts); room.teamB.bearParts?.forEach((parts,index)=>teamB[index].partsCount=parts); updateTurnUI(); if(room.status==='FINISHED')window.network.showGameOverModal(room); }
+
+// Синхронізує X-позиції ведмедиків команди з масивом позицій із сервера та підтягує їхній Y під рельєф
 function syncTeamPositions(team,positions) { positions?.forEach((x,index)=>{if(Number.isFinite(x)&&team[index]){team[index].x=x;updateY(team[index]);}}); }
+
+// Ініціалізує клієнтський стан гри при вході в кімнату: генерує рельєф за roomId і застосовує позиції/стан з сервера
 function loadRoom(room) { generateTerrain(room.roomId); syncTeamPositions(teamA,room.teamA.bearPositions); syncTeamPositions(teamB,room.teamB.bearPositions); applyServerRoom(room); }
+
+// Створює снаряд (bullet), що вилітає з поточної "живої" частини тіла ведмедика в напрямку прицілу з заданою потужністю
 function spawnBullet(bear,ownerTeam) { const part=BEAR_PARTS[bear.partsCount-1]; if(!part)return; const offset=18; bullet={x:bear.x+part.dx+Math.cos(bear.angle)*offset,y:bear.y+part.dy+Math.sin(bear.angle)*offset,vx:Math.cos(bear.angle)*(bear.power/6),vy:Math.sin(bear.angle)*(bear.power/6),radius:part.r,color:bear.color,ownerTeam}; bear.power=0; }
-async function requestAction(action,payload,token=window.playerToken) { 
+
+// Надсилає ігрову дію на сервер (постріл, падіння, пошкодження тощо) через POST /api/game-action,
+// підставляючи токен гравця з sessionStorage, якщо явно не передано інший
+async function requestAction(action,payload,token=window.playerToken) {
   const effectiveToken = token || sessionStorage.getItem('gummy_player_token');
   const response=await fetch('/api/game-action',{
     method:'POST',
     credentials: 'same-origin',
     headers:{'Content-Type':'application/json'},
     body:JSON.stringify({roomId:window.currentRoom.roomId,playerToken:effectiveToken,action,payload})
-  }); 
-  return {response,data:await response.json()}; 
+  });
+  return {response,data:await response.json()};
 }
+
+// Повідомляє сервер, що ведмедик впав у прірву (втрачає всі частини тіла); оновлює стан з відповіді сервера
 async function reportFall(bear,team,index) { if(bear.fallReported||!window.currentRoom)return; const isAiBear=window.currentRoom.mode==='AI'&&team==='TEAM_B'; if(team!==window.myTeam&&!isAiBear)return; bear.fallReported=true; bear.partsCount=0; bear.isCharging=false; try { const {response,data}=await requestAction('REPORT_FALL',{bearIndex:index},isAiBear?'BOT_TOKEN':window.playerToken); if(response.ok&&data.room)applyServerRoom(data.room); } catch (_) { bear.fallReported=false; } }
+
+// Обробляє постріл гравця: перевіряє чи можна стріляти, надсилає дію SHOOT на сервер, і локально запускає снаряд
 async function handlePlayerShoot(bear) { bear.isCharging=false; if(bear.partsCount<=0||bullet||resolvingExplosion||!window.isMyTurn)return; const team=window.myTeam==='TEAM_A'?teamA:teamB; try { const {response,data}=await requestAction('SHOOT',{bearIndex:team.indexOf(bear),bearX:bear.x,bearY:bear.y,angle:bear.angle,power:bear.power}); if(!response.ok||!data.room)return; spawnBullet(bear,window.myTeam); applyServerRoom(data.room); } catch (_) {} }
+
+// Відтворює постріл суперника, отриманий через мережу: виставляє позицію/кут/потужність ведмедика і запускає снаряд
 function executeRemoteShoot(action) { const team=action.team==='TEAM_A'?teamA:teamB, bear=team[action.bearIndex]||team[0]; if(Number.isFinite(action.bearX))bear.x=action.bearX; updateY(bear); bear.angle=action.angle; bear.power=action.power; spawnBullet(bear,action.team); }
+
+// Обирає, куди AI-ведмедику варто переміститись: тримається подалі від країв острова
+// та намагається уникати локальних западин рельєфу, з елементом випадковості
 function chooseAiMoveTarget(bear) { const at=(position)=>terrain[Math.max(0,Math.min(canvas.width-1,Math.round(position)))], left=at(bear.x-70),right=at(bear.x+70),current=at(bear.x); let direction=bear.x<160?1:bear.x>canvas.width-160?-1:current>Math.min(left,right)+25?(left<=right?-1:1):Math.random()<.5?-1:1; return Math.max(160,Math.min(canvas.width-160,bear.x+direction*(20+Math.random()*60))); }
+
+// Плавно анімує рух AI-ведмедика до цільової X-позиції кадр за кадром (Promise резолвиться по завершенні)
 function animateAiMovement(bear,target) { return new Promise((resolve)=>{if(bear.partsCount<=8||Math.abs(target-bear.x)<1)return resolve();const speed=bear.partsCount<=9?.9:1.8,direction=target>bear.x?1:-1;function step(){if(Math.abs(target-bear.x)<=speed){bear.x=target;updateY(bear);return resolve();}bear.x+=direction*speed;updateY(bear);requestAnimationFrame(step);}step();}); }
+
+// Виконує повний хід AI (команда TEAM_B у режимі AI): переміщується, обирає випадковий кут/потужність
+// пострілу і надсилає SHOOT на сервер від імені бота
 async function handleAiTurn() { if(!window.currentRoom||window.currentRoom.mode!=='AI'||window.currentRoom.status!=='PLAYING'||window.currentRoom.activeTeam!=='TEAM_B'||window.currentRoom.pendingShot||bullet||resolvingExplosion||aiMoving)return; const bear=getActiveBear();if(!bear)return;aiMoving=true;updateTurnUI();try{await animateAiMovement(bear,chooseAiMoveTarget(bear));if(window.currentRoom?.activeTeam!=='TEAM_B'||window.currentRoom.pendingShot)return;bear.angle=-Math.PI*(.6+Math.random()*.3);bear.power=30+Math.random()*50;const {response,data}=await requestAction('SHOOT',{bearIndex:teamB.indexOf(bear),bearX:bear.x,bearY:bear.y,angle:bear.angle,power:bear.power},'BOT_TOKEN');if(!response.ok||!data.room)return;spawnBullet(bear,'TEAM_B');applyServerRoom(data.room);}catch(_){}finally{aiMoving=false;updateTurnUI();} }
+
+// Породжує частинки для візуального ефекту вибуху/попадання в заданій точці й кольорі
 function createExplosionParticles(x,y,color) { for(let index=0;index<25;index++)particles.push({x,y,vx:(Math.random()-.5)*8,vy:(Math.random()-.5)*8,radius:Math.random()*4+2,color,alpha:1,life:.03+Math.random()*.03}); }
+
+// Обробляє вибух снаряда: трясіння екрану, частинки, вирізає рельєф у радіусі вибуху,
+// рахує та застосовує пошкодження ворожій команді, звітує про пошкодження серверу (якщо це наш постріл)
 async function explode(x,y,owner) { if(resolvingExplosion)return;resolvingExplosion=true;window.screenShake=12;createExplosionParticles(x,y,owner==='TEAM_A'?'#52b788':'#ff4d6d');const radius=30;for(let px=Math.max(0,Math.floor(x-radius));px<Math.min(canvas.width,Math.floor(x+radius));px++){if(isVoid(px))continue;const depth=Math.sqrt(radius*radius-(px-x)*(px-x));const nextTerrain=Math.max(terrain[px],y+depth);terrain[px]=nextTerrain>=islandBottomY(px)-10?canvas.height+500:nextTerrain;}const target=owner==='TEAM_A'?teamB:teamA,damage=[0,0,0];target.forEach((bear,index)=>{const distance=Math.hypot(bear.x-x,bear.y-y);if(bear.partsCount>0&&distance<radius+18){damage[index]=Math.min(bear.partsCount,Math.ceil((1-distance/(radius+18))*3));bear.partsCount-=damage[index];}});if(owner===window.myTeam||(window.currentRoom.mode==='AI'&&owner==='TEAM_B'))try{const {response,data}=await requestAction('REPORT_DAMAGE',{shotId:window.currentRoom.pendingShot.id,damageByBear:damage},owner==='TEAM_B'?'BOT_TOKEN':window.playerToken);if(response.ok&&data.room)applyServerRoom(data.room);}catch(_){}resolvingExplosion=false;updateTurnUI();if(window.currentRoom?.mode==='AI'&&window.currentRoom.status==='PLAYING'&&window.currentRoom.activeTeam==='TEAM_B'&&!window.currentRoom.pendingShot)setTimeout(handleAiTurn,700); }
+
+// Головний крок фізики/логіки гри, що викликається з фіксованим кроком (~60 разів/сек):
+// рух активного ведмедика за клавішами, зарядка пострілу, гравітація ведмедиків над пустотою,
+// політ снаряда, зіткнення з хмарами/землею/межами екрану, згасання частинок
 function update(step=1) { const active=getActiveBear();if(window.isMyTurn&&active?.partsCount>0){let speed=active.partsCount<=8?0:active.partsCount<=9?.9:1.8;if(keys.KeyA&&active.x>10)active.x-=speed*step;if(keys.KeyD&&active.x<canvas.width-10)active.x+=speed*step;if(keys.KeyW&&active.angle>-Math.PI+.1)active.angle-=.02*step;if(keys.KeyS&&active.angle<-.1)active.angle+=.02*step;if(keys.Space&&!bullet){active.isCharging=true;active.power=Math.min(100,active.power+step);}}teamA.forEach((bear,index)=>{if(isVoid(bear.x)){bear.y+=6*step;if(bear.y>canvas.height+80)reportFall(bear,'TEAM_A',index);}else updateY(bear);});teamB.forEach((bear,index)=>{if(isVoid(bear.x)){bear.y+=6*step;if(bear.y>canvas.height+80)reportFall(bear,'TEAM_B',index);}else updateY(bear);});if(bullet){bullet.x+=bullet.vx*step;bullet.y+=bullet.vy*step;bullet.vy+=.16*step;bullet.vx+=wind*.08*step;const cloud=clouds.find((item)=>item.alive&&Math.hypot(bullet.x-item.x,bullet.y-item.y)<item.radius+bullet.radius);if(cloud){cloud.alive=false;createExplosionParticles(cloud.x,cloud.y,'#ffffff');const shot=bullet;bullet=null;explode(shot.x,shot.y,shot.ownerTeam);}else{const ground=terrain[Math.max(0,Math.min(canvas.width-1,Math.floor(bullet.x)))]||9999;if(bullet.x<-50||bullet.x>=canvas.width+50||bullet.y>=ground){const shot=bullet;bullet=null;explode(shot.x,shot.y,shot.ownerTeam);}}}particles=particles.filter((particle)=>{particle.x+=particle.vx*step;particle.y+=particle.vy*step;particle.alpha-=particle.life*step;return particle.alpha>0;}); }
+
+// Малює одну декоративну хмару (фіолетова тінь знизу + білі кола зверху)
 function drawCloud(cloud) { ctx.save();ctx.translate(cloud.x,cloud.y);ctx.fillStyle='rgba(58,32,111,.35)';ctx.beginPath();ctx.arc(-cloud.radius*.7,7,cloud.radius*.55,0,Math.PI*2);ctx.arc(0,10,cloud.radius*.7,0,Math.PI*2);ctx.arc(cloud.radius*.7,7,cloud.radius*.55,0,Math.PI*2);ctx.fill();ctx.strokeStyle='#dcecff';ctx.lineWidth=3;ctx.fillStyle='#fff';ctx.beginPath();ctx.arc(-cloud.radius*.72,0,cloud.radius*.52,0,Math.PI*2);ctx.arc(0,-cloud.radius*.28,cloud.radius*.72,0,Math.PI*2);ctx.arc(cloud.radius*.72,0,cloud.radius*.5,0,Math.PI*2);ctx.fill();ctx.stroke();ctx.restore(); }
+
+// Малює один суцільний сегмент острова (без розривів) від start до end за поточним рельєфом
 function drawIslandSegment(start,end) { ctx.fillStyle='#ff75a0';ctx.beginPath();ctx.moveTo(start,terrain[start]);for(let x=start+1;x<=end;x++)ctx.lineTo(x,terrain[x]);for(let x=end;x>=start;x--)ctx.lineTo(x,Math.max(terrain[x],islandBottomY(x)));ctx.closePath();ctx.fill();ctx.strokeStyle='#ffb5a7';ctx.lineWidth=4;ctx.beginPath();ctx.moveTo(start,terrain[start]);for(let x=start+1;x<=end;x++)ctx.lineTo(x,terrain[x]);ctx.stroke(); }
+
+// Проходить по всій ширині острова та малює кожен суцільний (не "пустий" від вибухів) сегмент рельєфу окремо
 function drawIsland() { let start=null;for(let x=120;x<=canvas.width-120;x++){if(!isVoid(x)&&start===null)start=x;if((isVoid(x)||x===canvas.width-120)&&start!==null){const end=isVoid(x)?x-1:x;if(end>=start)drawIslandSegment(start,end);start=null;}} }
+
+// Повний рендер кадру: фон, тряска екрану від вибуху, хмари, острів, обидві команди ведмедиків
+// (з індикатором прицілу для активного), шкала заряду пострілу, снаряд і частинки
 function draw() { const active=getActiveBear();ctx.save();if(window.screenShake>0){ctx.translate((Math.random()-.5)*window.screenShake,(Math.random()-.5)*window.screenShake);window.screenShake*=.85;if(window.screenShake<.5)window.screenShake=0;}ctx.clearRect(0,0,canvas.width,canvas.height);ctx.fillStyle='#1e0c3e';ctx.fillRect(0,0,canvas.width,canvas.height);clouds.filter((cloud)=>cloud.alive).forEach(drawCloud);drawIsland();[...teamA,...teamB].forEach((bear)=>{if(!bear.partsCount)return;ctx.save();ctx.translate(bear.x,bear.y);for(let i=0;i<bear.partsCount;i++){const part=BEAR_PARTS[i];ctx.fillStyle=bear.color;ctx.beginPath();ctx.arc(part.dx,part.dy,part.r,0,Math.PI*2);ctx.fill();ctx.fillStyle='rgba(255,255,255,.45)';ctx.beginPath();ctx.arc(part.dx-part.r*.3,part.dy-part.r*.3,part.r*.3,0,Math.PI*2);ctx.fill();}if(bear.partsCount>=10){ctx.fillStyle='#000';ctx.beginPath();ctx.arc(-3,-17,1.5,0,Math.PI*2);ctx.arc(3,-17,1.5,0,Math.PI*2);ctx.fill();}if(bear===active&&window.isMyTurn){ctx.strokeStyle='#ffbe0b';ctx.setLineDash([4,4]);ctx.beginPath();ctx.moveTo(0,-10);ctx.lineTo(Math.cos(bear.angle)*45,-10+Math.sin(bear.angle)*45);ctx.stroke();ctx.setLineDash([]);}ctx.restore();});if(active?.isCharging){ctx.fillStyle='#ffbe0b';ctx.fillRect(active.x-25,active.y-50,active.power/2,7);ctx.strokeStyle='#fff';ctx.strokeRect(active.x-25,active.y-50,50,7);}if(bullet){ctx.fillStyle=bullet.color;ctx.beginPath();ctx.arc(bullet.x,bullet.y,bullet.radius,0,Math.PI*2);ctx.fill();}particles.forEach((particle)=>{ctx.globalAlpha=particle.alpha;ctx.fillStyle=particle.color;ctx.beginPath();ctx.arc(particle.x,particle.y,particle.radius,0,Math.PI*2);ctx.fill();});ctx.restore(); }
+
+// Обробляє стан кімнати, що прийшов по мережі: синхронізує позицію суперника, відтворює його
+// постріл (якщо це нова дія SHOOT не від нас) і застосовує загальний стан кімнати
 function receiveRoomState(room) { const remoteTeam=window.myTeam==='TEAM_A'?teamB:teamA; const remoteState=window.myTeam==='TEAM_A'?room.teamB:room.teamA; syncTeamPositions(remoteTeam,remoteState.bearPositions); if(room.lastAction&&(!window.currentRoom?.lastAction||room.lastAction.timestamp>window.currentRoom.lastAction.timestamp)&&room.lastAction.type==='SHOOT'&&room.lastAction.team!==window.myTeam)executeRemoteShoot(room.lastAction); applyServerRoom(room); }
+
+// Слухачі клавіатури: відстежують натиснуті клавіші та ініціюють постріл при відпусканні пробілу під час зарядки
 window.addEventListener('keydown',(event)=>keys[event.code]=true);window.addEventListener('keyup',(event)=>{keys[event.code]=false;const bear=getActiveBear();if(event.code==='Space'&&bear?.isCharging&&window.isMyTurn)handlePlayerShoot(bear);});
+
+// Публічний API гри, доступний іншим скриптам (наприклад, мережевому шару) через window.game
 window.game={resetBears,loadRoom,receiveRoomState,handleAiTurn};
+
+// Початкова генерація рельєфу до завантаження конкретної кімнати
 generateTerrain();
+
+// Головний ігровий цикл: фіксований крок фізики (update) незалежно від частоти кадрів, потім рендер (draw)
 (function loop(timestamp){if(!lastFrameTime)lastFrameTime=timestamp;physicsAccumulator+=Math.min(100,timestamp-lastFrameTime)/(1000/60);lastFrameTime=timestamp;while(physicsAccumulator>=1){update(1);physicsAccumulator-=1;}draw();requestAnimationFrame(loop);})(performance.now());

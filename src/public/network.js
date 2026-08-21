@@ -8,6 +8,10 @@ window.wsConnection = null;
 window.screenShake = 0;
 const wsPendingRequests = new Map();
 let wsRequestCounter = 0;
+// Явний прапорець "RPS-модалка вже показана для поточної гри" — надійніший за перевірку
+// поточного display createdRoomModal, який залежить від порядку подій і не мав би бути
+// єдиним джерелом істини для того, чи вже стартувала гра
+let rpsModalTriggered = false;
 
 window.handleTurnstileSuccess = async (token) => {
   const status = document.getElementById('turnstileStatus');
@@ -86,6 +90,7 @@ function applyRpsWinner(room) {
 }
 
 function showRpsModal(room) {
+  rpsModalTriggered = true;
   document.getElementById('createdRoomModal').style.display = 'none';
   const modal = document.getElementById('rpsModal'),
         detail = document.getElementById('rpsDetail'),
@@ -134,6 +139,7 @@ function showGameOverModal(room) {
 window.rematch = () => {
   document.getElementById('gameOverModal').style.display = 'none';
   closeRoomSocket();
+  rpsModalTriggered = false;
   window.currentRoom = null;
   window.playerToken = null; 
   sessionStorage.removeItem('gummy_player_token'); 
@@ -161,10 +167,11 @@ async function createRoom(mode, username) {
   return data; 
 }
 
-window.startAiGame = async () => { 
-  if (!requireTurnstile()) return; 
-  window.game.resetBears(); 
-  try { 
+window.startAiGame = async () => {
+  if (!requireTurnstile()) return;
+  window.game.resetBears();
+  rpsModalTriggered = false;
+  try {
     const username = saveUsername('Гравець 1'); 
     const data = await createRoom('AI', username); 
     window.playerToken = data.playerToken; 
@@ -182,10 +189,11 @@ window.startAiGame = async () => {
   }
 };
 
-window.createMultiplayerRoom = async () => { 
-  if (!requireTurnstile()) return; 
-  window.game.resetBears(); 
-  try { 
+window.createMultiplayerRoom = async () => {
+  if (!requireTurnstile()) return;
+  window.game.resetBears();
+  rpsModalTriggered = false;
+  try {
     const username = saveUsername('Гравець 1'); 
     const data = await createRoom('MULTIPLAYER', username); 
     window.playerToken = data.playerToken; 
@@ -207,9 +215,10 @@ window.joinMultiplayerRoom = async () => {
   if (!requireTurnstile()) return; 
   const roomId = document.getElementById('roomCodeInput').value.trim().toUpperCase().match(/RM-[A-Z0-9]{6}/)?.[0] || ''; 
   if (!roomId) return alert('Введіть коректний код кімнати у форматі RM-XXXXXX.'); 
-  document.getElementById('roomCodeInput').value = roomId; 
-  window.game.resetBears(); 
-  try { 
+  document.getElementById('roomCodeInput').value = roomId;
+  window.game.resetBears();
+  rpsModalTriggered = false;
+  try {
     const username = saveUsername('Гравець 2'); 
     const res = await fetch('/api/join-room', {
       method: 'POST',
@@ -244,10 +253,12 @@ window.joinMultiplayerRoom = async () => {
 
 function handleIncomingRoomState(room) {
   window.game.receiveRoomState(room);
-  const createdRoomModal = document.getElementById('createdRoomModal');
-  if (room.status === 'PLAYING' && createdRoomModal.style.display !== 'none') {
-    createdRoomModal.style.display = 'none';
-    showRpsModal(room);
+  // Fail-safe: щойно кімната переходить у PLAYING, createdRoomModal ЗАВЖДИ ховається,
+  // незалежно від того, чи ми вже його ховали раніше — це не покладається на поточний
+  // display, який може бути неточним джерелом істини через порядок SYNC_STATE/ROOM_UPDATED
+  if (room.status === 'PLAYING') {
+    document.getElementById('createdRoomModal').style.display = 'none';
+    if (!rpsModalTriggered) showRpsModal(room);
   }
 }
 

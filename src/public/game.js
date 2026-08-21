@@ -17,6 +17,13 @@ const teamB = [{x:960,y:0,partsCount:10,color:'#ff4d6d',angle:-Math.PI*.75,power
 // час останнього кадру та накопичувач для фіксованого кроку фізики
 let wind=0, bullet=null, resolvingExplosion=false, aiMoving=false, particles=[], lastFrameTime=0, physicsAccumulator=0;
 let clouds=[];
+// Мітка часу останньої вже виконаної (анімованої) віддаленої дії — незалежна від
+// window.currentRoom.lastAction, щоб швидкі послідовні ROOM_UPDATED (SHOOT -> REPORT_DAMAGE)
+// не викликали executeRemoteShoot повторно і не губили постріл через перезапис lastAction
+let lastExecutedActionTime = 0;
+// Стан кімнати, що прийшов, поки триває анімація віддаленого пострілу/вибуху — застосовується
+// щойно анімація завершиться, замість негайного перезапису стану під час польоту снаряда
+let pendingRoomState = null;
 // Стан натиснутих клавіш керування
 const keys={};
 
@@ -40,7 +47,7 @@ function isVoid(x) { const index=Math.floor(x); return x<120||x>canvas.width-120
 function updateY(bear) { const index=Math.floor(bear.x); if(!isVoid(bear.x)&&index>=0&&index<canvas.width) bear.y=terrain[index]-5; }
 
 // Скидає позиції, здоров'я (partsCount) та стан обох команд до початкових значень нового раунду
-function resetBears() { bullet=null; resolvingExplosion=false; aiMoving=false; teamA.forEach((bear,index)=>Object.assign(bear,{partsCount:10,x:160+140*index,angle:-Math.PI/4,power:0,isCharging:false,fallReported:false})); teamB.forEach((bear,index)=>Object.assign(bear,{partsCount:10,x:960+140*index,angle:-Math.PI*.75,power:0,isCharging:false,fallReported:false})); }
+function resetBears() { bullet=null; resolvingExplosion=false; aiMoving=false; lastExecutedActionTime=0; pendingRoomState=null; teamA.forEach((bear,index)=>Object.assign(bear,{partsCount:10,x:160+140*index,angle:-Math.PI/4,power:0,isCharging:false,fallReported:false})); teamB.forEach((bear,index)=>Object.assign(bear,{partsCount:10,x:960+140*index,angle:-Math.PI*.75,power:0,isCharging:false,fallReported:false})); }
 
 // Повертає ведмедика, який зараз ходить (перший живий, починаючи з активного індексу команди на сервері)
 function getActiveBear() { if(!window.currentRoom)return teamA[0]; const team=window.currentRoom.activeTeam==='TEAM_A'?teamA:teamB, start=window.currentRoom.activeBearIndex[window.currentRoom.activeTeam]; for(let offset=0;offset<team.length;offset++){const bear=team[(start+offset)%team.length];if(bear.partsCount>0)return bear;} return null; }
@@ -95,7 +102,7 @@ function createExplosionParticles(x,y,color) { for(let index=0;index<25;index++)
 
 // Обробляє вибух снаряда: трясіння екрану, частинки, вирізає рельєф у радіусі вибуху,
 // рахує та застосовує пошкодження ворожій команді, звітує про пошкодження серверу (якщо це наш постріл)
-async function explode(x,y,owner) { if(resolvingExplosion)return;resolvingExplosion=true;window.screenShake=12;createExplosionParticles(x,y,owner==='TEAM_A'?'#52b788':'#ff4d6d');const radius=30;for(let px=Math.max(0,Math.floor(x-radius));px<Math.min(canvas.width,Math.floor(x+radius));px++){if(isVoid(px))continue;const depth=Math.sqrt(radius*radius-(px-x)*(px-x));const nextTerrain=Math.max(terrain[px],y+depth);terrain[px]=nextTerrain>=islandBottomY(px)-10?canvas.height+500:nextTerrain;}const target=owner==='TEAM_A'?teamB:teamA,damage=[0,0,0];target.forEach((bear,index)=>{const distance=Math.hypot(bear.x-x,bear.y-y);if(bear.partsCount>0&&distance<radius+18){damage[index]=Math.min(bear.partsCount,Math.ceil((1-distance/(radius+18))*3));bear.partsCount-=damage[index];}});if(owner===window.myTeam||(window.currentRoom.mode==='AI'&&owner==='TEAM_B'))try{const {response,data}=await requestAction('REPORT_DAMAGE',{shotId:window.currentRoom.pendingShot.id,damageByBear:damage},owner==='TEAM_B'?'BOT_TOKEN':window.playerToken);if(response.ok&&data.room)applyServerRoom(data.room);}catch(_){}resolvingExplosion=false;updateTurnUI();if(window.currentRoom?.mode==='AI'&&window.currentRoom.status==='PLAYING'&&window.currentRoom.activeTeam==='TEAM_B'&&!window.currentRoom.pendingShot)setTimeout(handleAiTurn,700); }
+async function explode(x,y,owner) { if(resolvingExplosion)return;resolvingExplosion=true;window.screenShake=12;createExplosionParticles(x,y,owner==='TEAM_A'?'#52b788':'#ff4d6d');const radius=30;for(let px=Math.max(0,Math.floor(x-radius));px<Math.min(canvas.width,Math.floor(x+radius));px++){if(isVoid(px))continue;const depth=Math.sqrt(radius*radius-(px-x)*(px-x));const nextTerrain=Math.max(terrain[px],y+depth);terrain[px]=nextTerrain>=islandBottomY(px)-10?canvas.height+500:nextTerrain;}const target=owner==='TEAM_A'?teamB:teamA,damage=[0,0,0];target.forEach((bear,index)=>{const distance=Math.hypot(bear.x-x,bear.y-y);if(bear.partsCount>0&&distance<radius+18){damage[index]=Math.min(bear.partsCount,Math.ceil((1-distance/(radius+18))*3));bear.partsCount-=damage[index];}});if(owner===window.myTeam||(window.currentRoom.mode==='AI'&&owner==='TEAM_B'))try{const {response,data}=await requestAction('REPORT_DAMAGE',{shotId:window.currentRoom.pendingShot.id,damageByBear:damage},owner==='TEAM_B'?'BOT_TOKEN':window.playerToken);if(response.ok&&data.room)applyServerRoom(data.room);}catch(_){}resolvingExplosion=false;if(pendingRoomState){const deferred=pendingRoomState;pendingRoomState=null;applyServerRoom(deferred);}updateTurnUI();if(window.currentRoom?.mode==='AI'&&window.currentRoom.status==='PLAYING'&&window.currentRoom.activeTeam==='TEAM_B'&&!window.currentRoom.pendingShot)setTimeout(handleAiTurn,700); }
 
 // Головний крок фізики/логіки гри, що викликається з фіксованим кроком (~60 разів/сек):
 // рух активного ведмедика за клавішами, зарядка пострілу, гравітація ведмедиків над пустотою,
@@ -116,8 +123,25 @@ function drawIsland() { let start=null;for(let x=120;x<=canvas.width-120;x++){if
 function draw() { const active=getActiveBear();ctx.save();if(window.screenShake>0){ctx.translate((Math.random()-.5)*window.screenShake,(Math.random()-.5)*window.screenShake);window.screenShake*=.85;if(window.screenShake<.5)window.screenShake=0;}ctx.clearRect(0,0,canvas.width,canvas.height);ctx.fillStyle='#1e0c3e';ctx.fillRect(0,0,canvas.width,canvas.height);clouds.filter((cloud)=>cloud.alive).forEach(drawCloud);drawIsland();[...teamA,...teamB].forEach((bear)=>{if(!bear.partsCount)return;ctx.save();ctx.translate(bear.x,bear.y);for(let i=0;i<bear.partsCount;i++){const part=BEAR_PARTS[i];ctx.fillStyle=bear.color;ctx.beginPath();ctx.arc(part.dx,part.dy,part.r,0,Math.PI*2);ctx.fill();ctx.fillStyle='rgba(255,255,255,.45)';ctx.beginPath();ctx.arc(part.dx-part.r*.3,part.dy-part.r*.3,part.r*.3,0,Math.PI*2);ctx.fill();}if(bear.partsCount>=10){ctx.fillStyle='#000';ctx.beginPath();ctx.arc(-3,-17,1.5,0,Math.PI*2);ctx.arc(3,-17,1.5,0,Math.PI*2);ctx.fill();}if(bear===active&&window.isMyTurn){ctx.strokeStyle='#ffbe0b';ctx.setLineDash([4,4]);ctx.beginPath();ctx.moveTo(0,-10);ctx.lineTo(Math.cos(bear.angle)*45,-10+Math.sin(bear.angle)*45);ctx.stroke();ctx.setLineDash([]);}ctx.restore();});if(active?.isCharging){ctx.fillStyle='#ffbe0b';ctx.fillRect(active.x-25,active.y-50,active.power/2,7);ctx.strokeStyle='#fff';ctx.strokeRect(active.x-25,active.y-50,50,7);}if(bullet){ctx.fillStyle=bullet.color;ctx.beginPath();ctx.arc(bullet.x,bullet.y,bullet.radius,0,Math.PI*2);ctx.fill();}particles.forEach((particle)=>{ctx.globalAlpha=particle.alpha;ctx.fillStyle=particle.color;ctx.beginPath();ctx.arc(particle.x,particle.y,particle.radius,0,Math.PI*2);ctx.fill();});ctx.restore(); }
 
 // Обробляє стан кімнати, що прийшов по мережі: синхронізує позицію суперника, відтворює його
-// постріл (якщо це нова дія SHOOT не від нас) і застосовує загальний стан кімнати
-function receiveRoomState(room) { const remoteTeam=window.myTeam==='TEAM_A'?teamB:teamA; const remoteState=window.myTeam==='TEAM_A'?room.teamB:room.teamA; syncTeamPositions(remoteTeam,remoteState.bearPositions); if(room.lastAction&&(!window.currentRoom?.lastAction||room.lastAction.timestamp>window.currentRoom.lastAction.timestamp)&&room.lastAction.type==='SHOOT'&&room.lastAction.team!==window.myTeam)executeRemoteShoot(room.lastAction); applyServerRoom(room); }
+// постріл (якщо це нова дія SHOOT не від нас, ще не виконана раніше) і застосовує загальний
+// стан кімнати — але не одразу, якщо зараз триває анімація віддаленого пострілу/вибуху,
+// щоб швидкі послідовні ROOM_UPDATED (SHOOT -> REPORT_DAMAGE) не перебивали цю анімацію
+function receiveRoomState(room) {
+  const remoteTeam=window.myTeam==='TEAM_A'?teamB:teamA;
+  const remoteState=window.myTeam==='TEAM_A'?room.teamB:room.teamA;
+  syncTeamPositions(remoteTeam,remoteState.bearPositions);
+
+  if(room.lastAction&&room.lastAction.type==='SHOOT'&&room.lastAction.team!==window.myTeam&&room.lastAction.timestamp>lastExecutedActionTime){
+    lastExecutedActionTime=room.lastAction.timestamp;
+    executeRemoteShoot(room.lastAction);
+  }
+
+  if(bullet||resolvingExplosion){
+    pendingRoomState=room;
+    return;
+  }
+  applyServerRoom(room);
+}
 
 // Слухачі клавіатури: відстежують натиснуті клавіші та ініціюють постріл при відпусканні пробілу під час зарядки
 window.addEventListener('keydown',(event)=>keys[event.code]=true);window.addEventListener('keyup',(event)=>{keys[event.code]=false;const bear=getActiveBear();if(event.code==='Space'&&bear?.isCharging&&window.isMyTurn)handlePlayerShoot(bear);});
